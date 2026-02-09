@@ -6,6 +6,13 @@ edition.workspace = true
 [dependencies]
 volt-core.workspace = true
 thiserror.workspace = true
+rustfft = "6.2"
+num-complex = "0.4"
 
 [dev-dependencies]
 proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "algebra_bench"
+harness = false
