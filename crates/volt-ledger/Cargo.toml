@@ -1,0 +1,16 @@
+[package]
+name = "volt-ledger"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+volt-core.workspace = true
+volt-bus.workspace = true
+volt-db.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

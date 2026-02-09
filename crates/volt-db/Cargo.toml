@@ -1,0 +1,14 @@
+[package]
+name = "volt-db"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+volt-core.workspace = true
+volt-bus.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

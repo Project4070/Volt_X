@@ -1,0 +1,16 @@
+[package]
+name = "volt-soft"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+volt-core.workspace = true
+volt-bus.workspace = true
+thiserror.workspace = true
+
+[features]
+default = []
+gpu = []
+
+[dev-dependencies]
+proptest.workspace = true

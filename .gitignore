@@ -1,0 +1,40 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock — included for binary crates, ignored for library workspace
+# Since volt-server is a binary, keep Cargo.lock committed
+# Cargo.lock
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (models are too large for git)
+data/models/*.bin
+data/models/*.pt
+data/models/*.onnx
+data/codebook/*.bin
+data/eval/results/
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+
+# Coverage
+lcov.info
+tarpaulin-report.html
+
+# Benchmark results (regenerated on each run)
+target/criterion/

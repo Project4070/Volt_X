@@ -1,0 +1,13 @@
+[package]
+name = "volt-safety"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+volt-core.workspace = true
+volt-bus.workspace = true
+volt-hard.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "volt-bus"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+volt-core.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

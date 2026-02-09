@@ -1,0 +1,20 @@
+[package]
+name = "volt-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[[bench]]
+name = "frame_bench"
+harness = false

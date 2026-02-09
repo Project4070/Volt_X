@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Volt X — 3D Architecture Visualization</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #030308; overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif; }
+  canvas { display: block; }
+  #info {
+    position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+    color: #e2e8f0; text-align: center; pointer-events: none; z-index: 10;
+  }
+  #info h1 { font-size: 28px; font-weight: bold; letter-spacing: 4px; text-shadow: 0 0 20px rgba(139,92,246,0.8); }
+  #info p { font-size: 12px; color: #64748b; margin-top: 4px; }
+  #controls {
+    position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+    color: #475569; font-size: 11px; text-align: center; pointer-events: none;
+  }
+  #tooltip {
+    position: absolute; display: none; background: rgba(15,23,42,0.95);
+    border: 1px solid rgba(139,92,246,0.5); border-radius: 8px;
+    padding: 12px 16px; color: #e2e8f0; font-size: 12px; max-width: 320px;
+    pointer-events: none; z-index: 20; backdrop-filter: blur(10px);
+  }
+  #tooltip h3 { color: #a78bfa; margin-bottom: 4px; font-size: 14px; }
+  #tooltip p { color: #94a3b8; font-size: 11px; line-height: 1.5; }
+  #legend {
+    position: absolute; top: 80px; right: 20px; color: #94a3b8; font-size: 11px;
+    background: rgba(10,10,26,0.8); border: 1px solid #1e293b; border-radius: 8px;
+    padding: 12px; pointer-events: none;
+  }
+  #legend div { display: flex; align-items: center; margin: 4px 0; }
+  #legend span { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 8px; }
+</style>
+</head>
+<body>
+<div id="info">
+  <h1>⚡ VOLT X</h1>
+  <p>Stateful OS for Sovereign Intelligence — 3D Architecture</p>
+</div>
+<div id="controls">Drag to rotate · Scroll to zoom · Hover for details</div>
+<div id="tooltip"><h3></h3><p></p></div>
+<div id="legend">
+  <div><span style="background:#7c3aed"></span> GPU Soft Core (RAR)</div>
+  <div><span style="background:#d97706"></span> CPU Hard Core</div>
+  <div><span style="background:#0891b2"></span> VoltDB / RAM</div>
+  <div><span style="background:#8b5cf6"></span> LLL Tensor Frame Bus</div>
+  <div><span style="background:#10b981"></span> Translators / Action Cores</div>
+  <div><span style="background:#ec4899"></span> Continual Learning</div>
+  <div><span style="background:#ef4444"></span> Safety (Omega Veto)</div>
+  <div><span style="background:#f59e0b"></span> Intelligence Commons</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+
+// ─── Scene Setup ───
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x030308, 0.012);
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(28, 22, 35);
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.target.set(0, 6, 0);
+controls.minDistance = 10;
+controls.maxDistance = 80;
+
+// ─── Lighting ───
+const ambientLight = new THREE.AmbientLight(0x1a1a3e, 0.6);
+scene.add(ambientLight);
+const dirLight = new THREE.DirectionalLight(0xc4b5fd, 0.4);
+dirLight.position.set(20, 30, 10);
+scene.add(dirLight);
+const purplePoint = new THREE.PointLight(0x7c3aed, 1.5, 60);
+purplePoint.position.set(-10, 15, 5);
+scene.add(purplePoint);
+const cyanPoint = new THREE.PointLight(0x22d3ee, 1.0, 60);
+cyanPoint.position.set(10, 5, -5);
+scene.add(cyanPoint);
+const amberPoint = new THREE.PointLight(0xf59e0b, 0.8, 50);
+amberPoint.position.set(0, 10, 10);
+scene.add(amberPoint);
+
+// ─── Materials ───
+const matGlass = (color, opacity = 0.15) => new THREE.MeshPhysicalMaterial({
+  color, transparent: true, opacity, roughness: 0.1, metalness: 0.1,
+  side: THREE.DoubleSide, depthWrite: false
+});
+const matSolid = (color, emissive = 0x000000, emissiveI = 0) => new THREE.MeshPhysicalMaterial({
+  color, emissive, emissiveIntensity: emissiveI, roughness: 0.3, metalness: 0.5
+});
+const matGlow = (color) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 });
+const matWire = (color) => new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 });
+const matLine = (color, opacity = 0.6) => new THREE.LineBasicMaterial({ color, transparent: true, opacity });
+
+// ─── Helpers ───
+function createBox(w, h, d, mat, pos, name, desc) {
+  const geo = new THREE.BoxGeometry(w, h, d);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(...pos);
+  mesh.userData = { name, desc };
+  scene.add(mesh);
+  return mesh;
+}
+function createEdges(mesh, color = 0x475569) {
+  const edges = new THREE.EdgesGeometry(mesh.geometry);
+  const line = new THREE.LineSegments(edges, matLine(color, 0.4));
+  line.position.copy(mesh.position);
+  line.rotation.copy(mesh.rotation);
+  scene.add(line);
+  return line;
+}
+function createLabel(text, pos, color = 0xe2e8f0, size = 0.35) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = 512; canvas.height = 64;
+  ctx.fillStyle = 'transparent'; ctx.fillRect(0, 0, 512, 64);
+  ctx.font = `bold ${Math.round(size * 80)}px Segoe UI, Arial`;
+  ctx.fillStyle = '#' + color.toString(16).padStart(6, '0');
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 256, 32);
+  const tex = new THREE.CanvasTexture(canvas);
+  const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+  const sprite = new THREE.Sprite(spriteMat);
+  sprite.position.set(...pos);
+  sprite.scale.set(size * 6, size * 0.8, 1);
+  scene.add(sprite);
+  return sprite;
+}
+function createConnection(from, to, color, dashed = false) {
+  const points = [new THREE.Vector3(...from), new THREE.Vector3(...to)];
+  const geo = new THREE.BufferGeometry().setFromPoints(points);
+  const mat = dashed
+    ? new THREE.LineDashedMaterial({ color, transparent: true, opacity: 0.4, dashSize: 0.3, gapSize: 0.2 })
+    : matLine(color, 0.4);
+  const line = new THREE.Line(geo, mat);
+  if (dashed) line.computeLineDistances();
+  scene.add(line);
+  return line;
+}
+function createCurve(from, ctrl, to, color, segments = 30) {
+  const curve = new THREE.QuadraticBezierCurve3(
+    new THREE.Vector3(...from), new THREE.Vector3(...ctrl), new THREE.Vector3(...to)
+  );
+  const points = curve.getPoints(segments);
+  const geo = new THREE.BufferGeometry().setFromPoints(points);
+  const line = new THREE.Line(geo, matLine(color, 0.35));
+  scene.add(line);
+  return { line, curve };
+}
+
+// ─── Particle System ───
+const particleGroup = new THREE.Group();
+scene.add(particleGroup);
+const particlePaths = [];
+
+function createFlowParticles(curve, color, count = 8, speed = 0.003) {
+  for (let i = 0; i < count; i++) {
+    const geo = new THREE.SphereGeometry(0.06, 6, 6);
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8 });
+    const mesh = new THREE.Mesh(geo, mat);
+    particleGroup.add(mesh);
+    particlePaths.push({ mesh, curve, t: i / count, speed: speed + Math.random() * 0.002 });
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// LAYER: VoltDB / RAM (Foundation — Bottom)
+// ════════════════════════════════════════════════════════════════
+
+// T2: Long-Term (biggest, bottom)
+const t2 = createBox(24, 1.8, 14, matGlass(0x0891b2, 0.08), [0, 0, 0],
+  'VoltDB Tier 2 — Long-Term Memory',
+  'RAM + NVMe SSD | 64-160+ GB | Millions of compressed R₀ frames (1KB each). LSM-Tree storage, mmap paging, rkyv zero-copy. Lifetime archive — never forgets.');
+createEdges(t2, 0x0891b2);
+createLabel('T2: Long-Term Memory', [0, 0, 8], 0x67e8f9, 0.35);
+
+// T1: Short-Term (medium, above T2)
+const t1 = createBox(20, 2, 12, matGlass(0x22d3ee, 0.12), [0, 2.2, 0],
+  'VoltDB Tier 1 — Short-Term Memory',
+  'System RAM | 8-32 GB | ~500K full Tensor Frames organized in Strands. HNSW semantic index + B-tree temporal index + inverted slot index. O(log N) retrieval.');
+createEdges(t1, 0x22d3ee);
+createLabel('T1: Short-Term (Strands)', [0, 2.2, 7], 0xa5f3fc, 0.3);
+
+// Strand Columns inside T1
+const strandColors = [0x22d3ee, 0x06b6d4, 0x0891b2, 0x0e7490, 0x22d3ee, 0x14b8a6, 0x0d9488];
+const strandNames = ['Coding', 'Sociology', 'Narae', 'Personal', 'Cooking', 'Music', 'Math'];
+for (let i = 0; i < 7; i++) {
+  const x = -7.5 + i * 2.5;
+  const h = 1.0 + Math.random() * 0.8;
+  const strand = createBox(1.5, h, 1.5, matSolid(strandColors[i], strandColors[i], 0.3),
+    [x, 2.2, -2 + Math.random() * 4],
+    `Strand: ${strandNames[i]}`,
+    `Collection of related Tensor Frames. Isolated context. O(1) pointer swap for context switching. Contains HNSW sub-index for this topic.`);
+  createEdges(strand, strandColors[i]);
+}
+
+// VoltDB Internals (small cubes inside T2)
+const dbComponents = [
+  { name: 'HNSW Index', pos: [-8, 0, -4], color: 0x06b6d4 },
+  { name: 'B-tree Temporal', pos: [-4, 0, -4], color: 0x0891b2 },
+  { name: 'Inverted Slot', pos: [0, 0, -4], color: 0x0e7490 },
+  { name: 'LSM-Tree', pos: [4, 0, -4], color: 0x155e75 },
+  { name: 'Bloom Filters', pos: [8, 0, -4], color: 0x164e63 },
+  { name: 'MVCC Engine', pos: [-6, 0, -2], color: 0x0f766e },
+  { name: 'WAL', pos: [-2, 0, -2], color: 0x115e59 },
+  { name: 'GC Pipeline', pos: [2, 0, -2], color: 0xec4899 },
+  { name: 'Coherence Check', pos: [6, 0, -2], color: 0x475569 },
+];
+dbComponents.forEach(c => {
+  const cube = createBox(1.6, 0.6, 1.2, matSolid(c.color, c.color, 0.4), c.pos,
+    `VoltDB: ${c.name}`, `Internal storage engine component. Embedded in Rust binary. Zero IPC overhead.`);
+  createEdges(cube, c.color);
+});
+
+// T0 label
+createLabel('T0: Working (GPU VRAM)', [-8, 4.5, 8], 0xc4b5fd, 0.25);
+
+// ════════════════════════════════════════════════════════════════
+// LAYER: LLL Tensor Frame Bus (Glowing horizontal plane)
+// ════════════════════════════════════════════════════════════════
+const busY = 5;
+const busGeo = new THREE.BoxGeometry(22, 0.15, 10);
+const busMat = new THREE.MeshPhysicalMaterial({
+  color: 0x6d28d9, emissive: 0x7c3aed, emissiveIntensity: 0.6,
+  transparent: true, opacity: 0.25, roughness: 0.1, metalness: 0.8, side: THREE.DoubleSide
+});
+const bus = new THREE.Mesh(busGeo, busMat);
+bus.position.set(0, busY, 0);
+bus.userData = { name: 'LLL Tensor Frame Bus',
+  desc: 'F ∈ ℝ^[16 slots × 4 resolutions × 256 dims]. Carries structured Tensor Frames between all components. HDC algebra: ⊗ Bind, + Superpose, ρ Permute. Per-slot γ certainty. VQ-VAE codebook (65K entries).' };
+scene.add(bus);
+createLabel('⚡ LLL Tensor Frame Bus', [0, busY + 0.5, 6], 0xddd6fe, 0.4);
+
+// Bus grid lines
+for (let i = -10; i <= 10; i += 2) {
+  createConnection([i, busY + 0.1, -5], [i, busY + 0.1, 5], 0x4c1d95, true);
+}
+for (let j = -4; j <= 4; j += 2) {
+  createConnection([-11, busY + 0.1, j], [11, busY + 0.1, j], 0x4c1d95, true);
+}
+
+// ════════════════════════════════════════════════════════════════
+// Tensor Frame Visualization (floating example)
+// ════════════════════════════════════════════════════════════════
+const frameGroup = new THREE.Group();
+frameGroup.position.set(0, busY + 2.5, -3);
+scene.add(frameGroup);
+
+const slotColors = [0x22c55e, 0x8b5cf6, 0x22d3ee, 0xf59e0b, 0xec4899, 0x6366f1, 0xf97316, 0x14b8a6];
+const slotRoles = ['AGENT', 'PRED', 'PATIENT', 'LOC', 'TIME', 'MANNER', 'INSTR', 'RESULT'];
+for (let s = 0; s < 8; s++) {
+  for (let r = 0; r < 4; r++) {
+    const filled = (s < 5 && r < 3) || (s < 3 && r < 4);
+    const opacity = filled ? 0.3 + (3 - r) * 0.15 : 0.05;
+    const geo = new THREE.BoxGeometry(0.55, 0.35, 0.55);
+    const mat = new THREE.MeshPhysicalMaterial({
+      color: slotColors[s % slotColors.length],
+      emissive: filled ? slotColors[s % slotColors.length] : 0x000000,
+      emissiveIntensity: filled ? 0.4 : 0,
+      transparent: true, opacity, roughness: 0.2, metalness: 0.3
+    });
+    const cube = new THREE.Mesh(geo, mat);
+    cube.position.set(s * 0.7 - 2.45, r * 0.45, 0);
+    cube.userData = { name: `Slot ${s} (${slotRoles[s]}) @ R${r}`,
+      desc: `${filled ? 'FILLED' : 'EMPTY'} — ${['Discourse gist', 'Proposition', 'Phrase detail', 'Token'][r]} resolution. D=256 floats. ${filled ? 'Active in RAR loop.' : 'Sparse — zero compute cost.'}` };
+    frameGroup.add(cube);
+  }
+}
+createLabel('Tensor Frame', [0, busY + 4.5, -3], 0xe2e8f0, 0.3);
+createLabel('[S=16 × R=4 × D=256]', [0, busY + 4, -3], 0x94a3b8, 0.2);
+
+// ════════════════════════════════════════════════════════════════
+// GPU SOFT CORE (Left tower)
+// ════════════════════════════════════════════════════════════════
+const gpuX = -8;
+const gpuGroup = new THREE.Group();
+gpuGroup.position.set(gpuX, 0, 0);
+scene.add(gpuGroup);
+
+// GPU Enclosure
+const gpuShell = createBox(9, 14, 9, matGlass(0x7c3aed, 0.06), [gpuX, 10, 0],
+  'GPU Soft Core', 'Neural intuition engine. SIMD parallel. CUDA. Runs RAR loop over Tensor Frame slots. 4-8GB VRAM.');
+createEdges(gpuShell, 0x7c3aed);
+createLabel('🧠 GPU SOFT CORE', [gpuX, 17.5, 0], 0xddd6fe, 0.4);
+createLabel('RAR Loop', [gpuX, 16.8, 0], 0xa78bfa, 0.25);
+
+// VFN (Vector Field Network) — largest internal component
+const vfn = createBox(7, 3.5, 5, matSolid(0x5b21b6, 0x7c3aed, 0.5), [gpuX, 12, 0],
+  'Vector Field Network (VFN)',
+  '500M-2B params. Fourier Neural Operator. Shared weights across all slots. f_θ(S_i) → drift direction. Implicitly defines energy landscape: f_θ = -∇E.');
+createEdges(vfn, 0xa78bfa);
+
+// VFN internal layers
+for (let l = 0; l < 6; l++) {
+  const layerGeo = new THREE.BoxGeometry(6.5, 0.12, 4.5);
+  const layerMat = new THREE.MeshPhysicalMaterial({
+    color: 0x7c3aed, emissive: 0x8b5cf6, emissiveIntensity: 0.3 + l * 0.08,
+    transparent: true, opacity: 0.3, metalness: 0.6
+  });
+  const layer = new THREE.Mesh(layerGeo, layerMat);
+  layer.position.set(gpuX, 10.8 + l * 0.5, 0);
+  layer.userData = { name: `VFN Layer ${l + 1}`,
+    desc: `FNO layer. Input: 256-dim slot vector. Output: 256-dim drift vector. Forward-Forward trainable (one layer at a time for consumer GPU).` };
+  scene.add(layer);
+}
+createLabel('VFN f_θ', [gpuX, 12, 3.5], 0xc4b5fd, 0.25);
+
+// Diffusion Controller
+const diffusion = createBox(3, 1.5, 3, matSolid(0x6d28d9, 0x9333ea, 0.4), [gpuX - 2, 8.5, 0],
+  'Diffusion Controller σ_φ',
+  'Per-slot adaptive noise. σ_i = f(convergence_rate, mirror_signal). Converged slots: σ→0. Stuck slots: σ↑. Creative mode: high σ baseline. Noise injected orthogonal to gradient.');
+createEdges(diffusion, 0x9333ea);
+createLabel('Diffusion σ', [gpuX - 2, 8.5, 2.2], 0xd8b4fe, 0.2);
+
+// ODE Solver
+const solver = createBox(3, 1.5, 3, matSolid(0x4c1d95, 0x7c3aed, 0.3), [gpuX + 2, 8.5, 0],
+  'Adaptive ODE Solver',
+  'RK4 / DOPRI5 integrator. Per-slot adaptive step size: smooth gradients → large dt (fast), chaotic → small dt (careful). This IS adaptive computation time.');
+createEdges(solver, 0x7c3aed);
+createLabel('ODE Solver', [gpuX + 2, 8.5, 2.2], 0xc4b5fd, 0.2);
+
+// Manifold Projector
+const manifold = createBox(7, 0.8, 5, matSolid(0x3b0764, 0x6d28d9, 0.4), [gpuX, 7, 0],
+  'Manifold Projector',
+  'Per-slot unit normalization. S_i = S_i / ‖S_i‖. Prevents semantic drift. Keeps thought vectors on valid manifold M.');
+createEdges(manifold, 0x6d28d9);
+
+// Ghost Bleed Buffer
+const ghostBuffer = createBox(7, 1.2, 3, matGlass(0xe879f9, 0.15), [gpuX, 5.5, -2],
+  '👻 Ghost Frame Bleed Buffer',
+  '~1000 R₀ gists from T1/T2 (1KB each, ~1MB total). Creates subtle energy landscape dips. Enables distant memory influence. Page fault triggers full frame load.');
+createEdges(ghostBuffer, 0xe879f9);
+createLabel('Ghost Bleed Buffer', [gpuX, 5.5, 0], 0xf0abfc, 0.2);
+
+// Convergence Detector
+const convergence = createBox(3.5, 0.6, 2.5, matSolid(0x22c55e, 0x4ade80, 0.5), [gpuX, 6.2, 3],
+  'Convergence Detector',
+  '‖S_i(t+1) − S_i(t)‖ < ε per slot. Converged slots FREEZE. Others keep iterating. Budget watchdog: emit best-so-far if max iterations reached.');
+createEdges(convergence, 0x22c55e);
+
+// Warm Start Cache
+const warmCache = createBox(3, 1, 2, matSolid(0x4c1d95, 0x6d28d9, 0.3), [gpuX, 15, 3],
+  'Retention Cache (Warm Start)',
+  'LRU + 1hr TTL. ~40% hit rate. Stores converged attractor states. On cache hit, RAR starts from cached state instead of scratch — massive speedup.');
+createEdges(warmCache, 0x6d28d9);
+
+// ════════════════════════════════════════════════════════════════
+// CPU HARD CORE (Right tower)
+// ════════════════════════════════════════════════════════════════
+const cpuX = 8;
+
+const cpuShell = createBox(9, 14, 9, matGlass(0xd97706, 0.06), [cpuX, 10, 0],
+  'CPU Hard Core', 'Deterministic logic engine. Branching, sequential. Rust + Tokio + Rayon. 16+ cores. Same input → same output. Zero hallucination on computational tasks.');
+createEdges(cpuShell, 0xd97706);
+createLabel('⚙️ CPU HARD CORE', [cpuX, 17.5, 0], 0xfde68a, 0.4);
+createLabel('Deterministic Rust', [cpuX, 16.8, 0], 0xfcd34d, 0.25);
+
+// Intent Router
+const router = createBox(7, 1.5, 5, matSolid(0xb45309, 0xf59e0b, 0.5), [cpuX, 15, 0],
+  'Intent Router',
+  'Receives Tensor Frames. Routes to Hard Strands via cosine similarity on capability vectors. No JSON parsing. No string matching. Pure vector geometry.');
+createEdges(router, 0xfbbf24);
+createLabel('Intent Router', [cpuX, 15, 3.5], 0xfef3c7, 0.25);
+
+// Hard Strand Modules (grid inside CPU)
+const hardStrands = [
+  { name: '🔢 MathEngine', desc: 'Exact arithmetic. Zero hallucination.', pos: [cpuX - 2.5, 12.5, -1.5], color: 0xfbbf24 },
+  { name: '💻 CodeRunner', desc: 'Sandboxed WASM execution.', pos: [cpuX + 0.5, 12.5, -1.5], color: 0xf59e0b },
+  { name: '🌐 APIDispatch', desc: '50+ parallel HTTP calls via Tokio.', pos: [cpuX - 2.5, 12.5, 1.5], color: 0xd97706 },
+  { name: '🔗 HDC Algebra', desc: 'FFT Bind/Unbind. O(D log D).', pos: [cpuX + 0.5, 12.5, 1.5], color: 0xb45309 },
+  { name: '📒 LedgerStrand', desc: 'Intelligence Commons interface.', pos: [cpuX - 2.5, 11, -1.5], color: 0x8b5cf6 },
+  { name: '🌙 SleepLearner', desc: 'FF consolidation coordinator.', pos: [cpuX + 0.5, 11, -1.5], color: 0x10b981 },
+  { name: '🪞 Mirror', desc: 'Loop detection. Self-monitoring.', pos: [cpuX - 2.5, 11, 1.5], color: 0x06b6d4 },
+  { name: '🔮 CausalSim', desc: 'do(X=x). Counterfactual reasoning.', pos: [cpuX + 0.5, 11, 1.5], color: 0xf97316 },
+];
+hardStrands.forEach(hs => {
+  const m = createBox(2.8, 1.2, 2.5, matSolid(hs.color, hs.color, 0.3), hs.pos, hs.name, hs.desc);
+  createEdges(m, hs.color);
+});
+
+// Safety Layer (red, prominent)
+const safety = createBox(7, 1.8, 5, matSolid(0xef4444, 0xef4444, 0.6), [cpuX, 8.5, 0],
+  '🛡️ Safety Layer + OMEGA VETO',
+  'Axiomatic Guard: immutable K axioms, cryptographically signed. Transition Monitor: all F(t)→F(t+1). Omega Veto: hardware interrupt, cannot be bypassed. Requires human approval to resume.');
+createEdges(safety, 0xef4444);
+createLabel('OMEGA VETO', [cpuX, 8.5, 3.5], 0xfca5a5, 0.25);
+
+// Certainty Engine
+const certainty = createBox(3.5, 1, 3, matSolid(0xf59e0b, 0xfbbf24, 0.4), [cpuX - 1.5, 7, 0],
+  'γ Certainty Engine',
+  'Min-rule propagation: γ_frame = min(all slot γ). Conservative: conclusions never exceed weakest premise. Per-slot γ from convergence trajectory.');
+createEdges(certainty, 0xfbbf24);
+
+// Proof Constructor
+const proof = createBox(3.5, 1, 3, matSolid(0xd97706, 0xf59e0b, 0.3), [cpuX + 1.5, 7, 0],
+  '📜 Proof Constructor',
+  'Records complete reasoning trace. Each step: source slot, operation, result, γ before/after. Attached to output frame. Auditable by design.');
+createEdges(proof, 0xf59e0b);
+
+// ════════════════════════════════════════════════════════════════
+// GPU ↔ CPU Connection (glowing bridge)
+// ════════════════════════════════════════════════════════════════
+const bridgeCurve1 = createCurve(
+  [gpuX + 4.5, 11, 0], [0, 12, 0], [cpuX - 4.5, 11, 0], 0xe879f9
+);
+createFlowParticles(bridgeCurve1.curve, 0xe879f9, 12, 0.004);
+createLabel('Intent →', [0, 12.5, 0], 0xe879f9, 0.22);
+createLabel('← Result', [0, 11.8, 0], 0xe879f9, 0.18);
+
+// ════════════════════════════════════════════════════════════════
+// RAM ↔ GPU Bleed Connection
+// ════════════════════════════════════════════════════════════════
+const bleedCurve = createCurve(
+  [0, 3.2, 2], [-6, 4, 2], [gpuX, 5.5, -0.5], 0xe879f9
+);
+createFlowParticles(bleedCurve.curve, 0xd946ef, 6, 0.003);
+createLabel('Ghost Bleed', [-4, 4.5, 3], 0xd946ef, 0.18);
+
+// ════════════════════════════════════════════════════════════════
+// RAM ↔ CPU Connection
+// ════════════════════════════════════════════════════════════════
+const ramCpuCurve = createCurve(
+  [4, 3.2, 0], [7, 4, 0], [cpuX, 7, -1], 0x22d3ee
+);
+createFlowParticles(ramCpuCurve.curve, 0x22d3ee, 8, 0.003);
+
+// ════════════════════════════════════════════════════════════════
+// INPUT TRANSLATORS (top-left cluster)
+// ════════════════════════════════════════════════════════════════
+const inputY = 19;
+const translators = [
+  { name: '📝 Text', x: -10, z: -4, color: 0x22c55e },
+  { name: '🖼️ Vision', x: -7, z: -5, color: 0x10b981 },
+  { name: '🎤 Audio', x: -4, z: -4.5, color: 0x059669 },
+  { name: '📊 Data', x: -1, z: -5, color: 0x047857 },
+  { name: '📡 Sensor', x: 2, z: -4, color: 0x14b8a6 },
+];
+translators.forEach(t => {
+  const m = createBox(2, 1, 2, matSolid(t.color, t.color, 0.4), [t.x, inputY, t.z],
+    `Translator: ${t.name}`, `Community module. impl Translator { fn encode() → TensorFrame }. Hot-pluggable.`);
+  createEdges(m, t.color);
+  createConnection([t.x, inputY - 0.5, t.z], [t.x * 0.5, busY + 0.5, t.z * 0.3], 0x10b981, true);
+});
+createLabel('INPUT TRANSLATORS', [-4, inputY + 1.5, -4.5], 0x6ee7b7, 0.3);
+createLabel('impl Translator', [-4, inputY + 1, -4.5], 0x34d399, 0.18);
+
+// ════════════════════════════════════════════════════════════════
+// OUTPUT ACTION CORES (top-right cluster)
+// ════════════════════════════════════════════════════════════════
+const outputCores = [
+  { name: '💬 Text', x: 2, z: 5, color: 0x22c55e },
+  { name: '🔊 Speech', x: 5, z: 4.5, color: 0x10b981 },
+  { name: '🖼️ Image', x: 8, z: 5, color: 0x059669 },
+  { name: '📧 n8n', x: 11, z: 4.5, color: 0x14b8a6 },
+  { name: '🔗 Ledger', x: 14, z: 5, color: 0x8b5cf6 },
+];
+outputCores.forEach(o => {
+  const m = createBox(2, 1, 2, matSolid(o.color, o.color, 0.4), [o.x, inputY, o.z],
+    `Action Core: ${o.name}`, `Community module. impl ActionCore { fn decode(TensorFrame) → Output }. Parallel slot decoding.`);
+  createEdges(m, o.color);
+  createConnection([o.x * 0.5, busY + 0.5, o.z * 0.3], [o.x, inputY - 0.5, o.z], 0x10b981, true);
+});
+createLabel('OUTPUT ACTION CORES', [8, inputY + 1.5, 5], 0x6ee7b7, 0.3);
+createLabel('impl ActionCore', [8, inputY + 1, 5], 0x34d399, 0.18);
+
+// ════════════════════════════════════════════════════════════════
+// CONTINUAL LEARNING ENGINE (floating, above everything)
+// ════════════════════════════════════════════════════════════════
+const learnY = 21;
+const learnGroup = new THREE.Group();
+
+const instant = createBox(3.5, 1.2, 3, matSolid(0x22d3ee, 0x22d3ee, 0.4), [-6, learnY, 0],
+  '⚡ Instant Learning', 'RAM strand writes. "Call me Alex" updates instantly. No weight change. Zero forgetting.');
+createEdges(instant, 0x22d3ee);
+
+const sleep = createBox(3.5, 1.2, 3, matSolid(0xf59e0b, 0xf59e0b, 0.4), [0, learnY, 0],
+  '🌙 Sleep Consolidation', 'CPU batches events → GPU Forward-Forward. Layer-by-layer. VRAM ≈ inference. Raw frames → distilled wisdom.');
+createEdges(sleep, 0xf59e0b);
+
+const growth = createBox(3.5, 1.2, 3, matSolid(0x8b5cf6, 0x8b5cf6, 0.4), [6, learnY, 0],
+  '🌱 Developmental Growth', 'Strand graduation (temp → permanent). Module hot-plug. Mirror detects: "user needs new strand."');
+createEdges(growth, 0x8b5cf6);
+
+createLabel('CONTINUAL LEARNING', [0, learnY + 1.5, 0], 0xfde68a, 0.35);
+
+// Learning connections
+createConnection([-6, learnY - 0.6, 0], [0, 3.2, 0], 0x22d3ee, true); // instant → RAM
+createCurve([0, learnY - 0.6, 0], [gpuX + 2, learnY - 3, 0], [gpuX, 15, 2], 0xf59e0b); // sleep → GPU
+createConnection([6, learnY - 0.6, 0], [0, 3.2, 2], 0x8b5cf6, true); // growth → RAM
+
+// ════════════════════════════════════════════════════════════════
+// INTELLIGENCE COMMONS (floating right side)
+// ════════════════════════════════════════════════════════════════
+const commonsGroup = new THREE.Group();
+commonsGroup.position.set(16, 6, -6);
+scene.add(commonsGroup);
+
+const commons = createBox(6, 4, 4, matGlass(0x6d28d9, 0.12), [16, 6, -6],
+  '📒 Intelligence Commons', 'Post-blockchain DAG ledger. L0: Local (offline-first). L1: P2P gossip (libp2p). L2: Settlement (micropayments). Proof-of-Contribution. VOLT token.');
+createEdges(commons, 0x6d28d9);
+
+// Internal layers
+createBox(5, 0.6, 3, matSolid(0x22d3ee, 0x22d3ee, 0.3), [16, 4.5, -6],
+  'L0: Local Instance', 'Append-only event log. Merkle hashes. Ed25519 wallet. ZK proofs. Works fully offline.');
+createBox(5, 0.6, 3, matSolid(0x8b5cf6, 0x8b5cf6, 0.3), [16, 5.5, -6],
+  'L1: P2P Gossip Mesh', 'CRDT merge. Module registry (IPFS CIDs). Fact gossip with verification attestations.');
+createBox(5, 0.6, 3, matSolid(0xf59e0b, 0xf59e0b, 0.3), [16, 6.5, -6],
+  'L2: Settlement DAG', 'Batched micropayments. Fact anchoring. Provenance registry. Governance.');
+
+// Four value flows (small orbs)
+const flows = [
+  { name: '📚 Knowledge', pos: [14, 8, -5], color: 0x8b5cf6 },
+  { name: '🧩 Modules', pos: [18, 8, -5], color: 0x10b981 },
+  { name: '✅ Verification', pos: [14, 8, -7], color: 0xf59e0b },
+  { name: '🔄 Strands', pos: [18, 8, -7], color: 0x22d3ee },
+];
+flows.forEach(f => {
+  const geo = new THREE.SphereGeometry(0.5, 16, 16);
+  const mat = matSolid(f.color, f.color, 0.6);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(...f.pos);
+  mesh.userData = { name: f.name, desc: 'Value flow in the Intelligence Commons. Earned via Proof-of-Contribution.' };
+  scene.add(mesh);
+});
+
+createLabel('INTELLIGENCE COMMONS', [16, 9.5, -6], 0xddd6fe, 0.3);
+createLabel('Post-Blockchain Ledger', [16, 9, -6], 0xa78bfa, 0.2);
+
+// Connection to CPU (Ledger Strand)
+createCurve([cpuX + 1, 11, -2], [13, 9, -4], [16, 7, -6], 0x8b5cf6);
+
+// ════════════════════════════════════════════════════════════════
+// External World (very top, floating)
+// ════════════════════════════════════════════════════════════════
+const extY = 23;
+const externals = [
+  { name: '👤 User', x: -8, z: -3, color: 0x94a3b8 },
+  { name: '🌐 APIs', x: -3, z: -4, color: 0x94a3b8 },
+  { name: '📡 Sensors', x: 3, z: -3.5, color: 0x94a3b8 },
+  { name: '💻 OS', x: 8, z: -4, color: 0x94a3b8 },
+];
+externals.forEach(e => {
+  const geo = new THREE.SphereGeometry(0.8, 12, 12);
+  const mat = matSolid(e.color, e.color, 0.3);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(e.x, extY, e.z);
+  mesh.userData = { name: e.name, desc: 'External world interface.' };
+  scene.add(mesh);
+  createConnection([e.x, extY - 0.8, e.z], [e.x * 0.8, inputY + 0.5, e.z * 0.5], 0x64748b, true);
+});
+createLabel('EXTERNAL WORLD', [0, extY + 1.5, -3.5], 0x94a3b8, 0.3);
+
+// ════════════════════════════════════════════════════════════════
+// TRAIT INTERFACE LABELS (bottom, foundation)
+// ════════════════════════════════════════════════════════════════
+createLabel('🔧 Socket Standard: pub trait Translator | pub trait HardStrand | pub trait ActionCore', [0, -1.8, 8], 0x64748b, 0.25);
+
+// ════════════════════════════════════════════════════════════════
+// RAR LOOP Visualization (orbiting ring around GPU)
+// ════════════════════════════════════════════════════════════════
+const rarRingGeo = new THREE.TorusGeometry(6, 0.08, 8, 64);
+const rarRingMat = new THREE.MeshBasicMaterial({ color: 0xe879f9, transparent: true, opacity: 0.3 });
+const rarRing = new THREE.Mesh(rarRingGeo, rarRingMat);
+rarRing.position.set(gpuX, 11, 0);
+rarRing.rotation.x = Math.PI / 2;
+scene.add(rarRing);
+
+// RAR phase markers
+const rarPhases = [
+  { name: 'R: Root', angle: 0, color: 0x8b5cf6, desc: 'Parallel slot-local VFN forward passes. Independent per slot.' },
+  { name: 'A: Attend', angle: Math.PI * 0.66, color: 0x22d3ee, desc: 'Cross-slot attention O(S²). Ghost frame attention. Message passing.' },
+  { name: 'Re: Refine', angle: Math.PI * 1.33, color: 0xf59e0b, desc: 'State update + manifold projection + convergence check. Freeze converged slots.' },
+];
+rarPhases.forEach(p => {
+  const geo = new THREE.SphereGeometry(0.35, 12, 12);
+  const mat = matGlow(p.color);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(
+    gpuX + Math.cos(p.angle) * 6,
+    11,
+    Math.sin(p.angle) * 6
+  );
+  mesh.userData = { name: p.name, desc: p.desc };
+  scene.add(mesh);
+});
+createLabel('R', [gpuX + 6, 11.5, 0], 0xc4b5fd, 0.2);
+createLabel('A', [gpuX - 3, 11.5, 5.2], 0x67e8f9, 0.2);
+createLabel('Re', [gpuX - 3, 11.5, -5.2], 0xfcd34d, 0.2);
+
+// ════════════════════════════════════════════════════════════════
+// Ambient particles (floating dust)
+// ════════════════════════════════════════════════════════════════
+const dustGeo = new THREE.BufferGeometry();
+const dustCount = 2000;
+const dustPositions = new Float32Array(dustCount * 3);
+for (let i = 0; i < dustCount; i++) {
+  dustPositions[i * 3] = (Math.random() - 0.5) * 60;
+  dustPositions[i * 3 + 1] = Math.random() * 30;
+  dustPositions[i * 3 + 2] = (Math.random() - 0.5) * 40;
+}
+dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
+const dustMat = new THREE.PointsMaterial({ color: 0x4c1d95, size: 0.05, transparent: true, opacity: 0.4 });
+const dust = new THREE.Points(dustGeo, dustMat);
+scene.add(dust);
+
+// ════════════════════════════════════════════════════════════════
+// GROUND PLANE
+// ════════════════════════════════════════════════════════════════
+const groundGeo = new THREE.PlaneGeometry(60, 40);
+const groundMat = new THREE.MeshPhysicalMaterial({
+  color: 0x0a0a1a, roughness: 0.8, metalness: 0.2,
+  transparent: true, opacity: 0.5
+});
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -1;
+scene.add(ground);
+
+// ════════════════════════════════════════════════════════════════
+// HOVER INTERACTION
+// ════════════════════════════════════════════════════════════════
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+const tooltip = document.getElementById('tooltip');
+let hoveredObject = null;
+
+window.addEventListener('mousemove', (event) => {
+  mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(scene.children, true);
+
+  let found = null;
+  for (const hit of intersects) {
+    if (hit.object.userData && hit.object.userData.name) {
+      found = hit.object;
+      break;
+    }
+  }
+
+  if (found && found !== hoveredObject) {
+    hoveredObject = found;
+    tooltip.querySelector('h3').textContent = found.userData.name;
+    tooltip.querySelector('p').textContent = found.userData.desc || '';
+    tooltip.style.display = 'block';
+  } else if (!found) {
+    hoveredObject = null;
+    tooltip.style.display = 'none';
+  }
+
+  if (tooltip.style.display === 'block') {
+    tooltip.style.left = (event.clientX + 15) + 'px';
+    tooltip.style.top = (event.clientY + 15) + 'px';
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// ANIMATION LOOP
+// ════════════════════════════════════════════════════════════════
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const elapsed = clock.getElapsedTime();
+  const dt = clock.getDelta();
+
+  controls.update();
+
+  // RAR ring rotation
+  rarRing.rotation.z = elapsed * 0.5;
+
+  // RAR phase markers orbit
+  rarPhases.forEach((p, i) => {
+    const angle = p.angle + elapsed * 0.5;
+    const mesh = scene.children.find(c =>
+      c.userData && c.userData.name === p.name
+    );
+    if (mesh) {
+      mesh.position.set(
+        gpuX + Math.cos(angle) * 6,
+        11 + Math.sin(elapsed * 2 + i) * 0.3,
+        Math.sin(angle) * 6
+      );
+    }
+  });
+
+  // Flow particles
+  particlePaths.forEach(p => {
+    p.t = (p.t + p.speed) % 1;
+    const point = p.curve.getPoint(p.t);
+    p.mesh.position.copy(point);
+    p.mesh.material.opacity = 0.5 + Math.sin(elapsed * 3 + p.t * 10) * 0.3;
+  });
+
+  // Tensor Frame rotation
+  frameGroup.rotation.y = Math.sin(elapsed * 0.3) * 0.15;
+  frameGroup.position.y = busY + 2.5 + Math.sin(elapsed * 0.5) * 0.2;
+
+  // Bus pulse
+  busMat.emissiveIntensity = 0.4 + Math.sin(elapsed * 2) * 0.2;
+
+  // Safety pulse
+  safety.material.emissiveIntensity = 0.4 + Math.sin(elapsed * 3) * 0.2;
+
+  // Ghost buffer shimmer
+  ghostBuffer.material.opacity = 0.1 + Math.sin(elapsed * 1.5) * 0.05;
+
+  // Strand height animation (breathing)
+  let strandIdx = 0;
+  scene.traverse(obj => {
+    if (obj.userData && obj.userData.name && obj.userData.name.startsWith('Strand:')) {
+      obj.scale.y = 1 + Math.sin(elapsed * 0.8 + strandIdx * 0.5) * 0.1;
+      strandIdx++;
+    }
+  });
+
+  // Point lights orbit
+  purplePoint.position.x = Math.cos(elapsed * 0.3) * 15;
+  purplePoint.position.z = Math.sin(elapsed * 0.3) * 10;
+  cyanPoint.position.x = Math.cos(elapsed * 0.2 + 2) * 12;
+  cyanPoint.position.z = Math.sin(elapsed * 0.2 + 2) * 8;
+
+  // Dust drift
+  const positions = dust.geometry.attributes.position.array;
+  for (let i = 0; i < dustCount; i++) {
+    positions[i * 3 + 1] += Math.sin(elapsed + i) * 0.001;
+    if (positions[i * 3 + 1] > 30) positions[i * 3 + 1] = 0;
+  }
+  dust.geometry.attributes.position.needsUpdate = true;
+
+  // Value flow orbs orbit
+  flows.forEach((f, i) => {
+    const mesh = scene.children.find(c => c.userData && c.userData.name === f.name);
+    if (mesh) {
+      mesh.position.y = 8 + Math.sin(elapsed * 0.7 + i * 1.5) * 0.4;
+    }
+  });
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+// ─── Resize ───
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

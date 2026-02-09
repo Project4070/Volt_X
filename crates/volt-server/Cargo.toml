@@ -1,0 +1,21 @@
+[package]
+name = "volt-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+volt-core.workspace = true
+volt-bus.workspace = true
+volt-soft.workspace = true
+volt-hard.workspace = true
+volt-db.workspace = true
+volt-translate.workspace = true
+volt-learn.workspace = true
+volt-safety.workspace = true
+volt-ledger.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
