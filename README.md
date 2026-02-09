@@ -10,26 +10,30 @@ The system splits processing between a GPU "Soft Core" (neural intuition via sto
 
 ## Architecture
 
-```
-                        External World
-                             │
-                     Input Translators
-                    (NL/Vision/Audio → Frame)
-                             │
-              ┌──────────────┴──────────────┐
-              │   LLL Tensor Frame Bus      │
-              │  HDC Algebra: ⊗ + ρ ⊗⁻¹
-              └──┬──────────┬──────────┬────┘
-                 │          │          │
-          ┌──────┴───┐ ┌───┴────┐ ┌───┴────┐
-          │ GPU Soft │ │CPU Hard│ │ VoltDB │
-          │  Core    │ │ Core   │ │ Memory │
-          │ (RAR)    │ │(Verify)│ │(T0/T1/ │
-          │          │ │        │ │   T2)  │
-          └──────────┘ └────────┘ └────────┘
-                 │          │
-              Output Translators
-             (Frame → NL/Action)
+```mermaid
+graph TB
+    EW[External World]
+    IT[Input Translators<br/>NL/Vision/Audio → Frame]
+    BUS[TensorFrame Bus<br/>HDC Algebra: ⊗ + ρ ⊗⁻¹]
+    SOFT[GPU Soft Core<br/>RAR Loop]
+    HARD[CPU Hard Core<br/>Verify + Safety]
+    DB[VoltDB Memory<br/>T0/T1/T2]
+    OT[Output Translators<br/>Frame → NL/Action]
+    OUT[External World]
+
+    EW --> IT
+    IT --> BUS
+    BUS --> SOFT
+    BUS --> HARD
+    BUS --> DB
+    SOFT --> OT
+    HARD --> OT
+    OT --> OUT
+
+    style BUS fill:#4a9eff,stroke:#333,stroke-width:2px,color:#fff
+    style SOFT fill:#ff6b6b,stroke:#333,stroke-width:2px,color:#fff
+    style HARD fill:#51cf66,stroke:#333,stroke-width:2px,color:#fff
+    style DB fill:#ffd43b,stroke:#333,stroke-width:2px,color:#000
 ```
 
 ### TensorFrame `[S=16 × R=4 × D=256]`
@@ -76,21 +80,40 @@ Uses Hinton's Forward-Forward algorithm instead of backpropagation. Only one lay
 
 10 Rust crates with enforced dependency direction:
 
-```
-volt-core       TensorFrame, SlotData, SlotRole, VoltError
-  ↑
-volt-bus        HDC algebra (bind/unbind/superpose/permute)
-  ↑
-volt-soft       GPU Soft Core (RAR inference loop)
-volt-hard       CPU Hard Core (intent router, verification, safety)
-volt-db         VoltDB three-tier memory
-  ↑
-volt-translate  Input/output translators (NL ↔ Frame)
-volt-learn      Continual learning (Forward-Forward)
-volt-safety     Deterministic safety (axioms, Omega Veto)
-volt-ledger     P2P knowledge sharing
-  ↑
-volt-server     HTTP server (Axum) — leaf crate
+```mermaid
+graph BT
+    CORE[volt-core<br/>TensorFrame, SlotData,<br/>SlotRole, VoltError]
+    BUS[volt-bus<br/>HDC algebra]
+    SOFT[volt-soft<br/>GPU Soft Core]
+    HARD[volt-hard<br/>CPU Hard Core]
+    DB[volt-db<br/>VoltDB memory]
+    TRANS[volt-translate<br/>I/O translators]
+    LEARN[volt-learn<br/>Continual learning]
+    SAFE[volt-safety<br/>Safety axioms]
+    LEDGER[volt-ledger<br/>P2P sharing]
+    SERVER[volt-server<br/>HTTP server]
+
+    BUS --> CORE
+    SOFT --> BUS
+    HARD --> BUS
+    DB --> BUS
+    TRANS --> SOFT
+    TRANS --> HARD
+    TRANS --> DB
+    LEARN --> SOFT
+    LEARN --> HARD
+    LEARN --> DB
+    SAFE --> SOFT
+    SAFE --> HARD
+    SAFE --> DB
+    LEDGER --> TRANS
+    LEDGER --> LEARN
+    LEDGER --> SAFE
+    SERVER --> LEDGER
+
+    style CORE fill:#ff6b6b,stroke:#333,stroke-width:2px,color:#fff
+    style BUS fill:#4a9eff,stroke:#333,stroke-width:2px,color:#fff
+    style SERVER fill:#51cf66,stroke:#333,stroke-width:2px,color:#fff
 ```
 
 ## Building
