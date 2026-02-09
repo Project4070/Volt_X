@@ -16,6 +16,8 @@
 /// assert_eq!(meta.global_certainty, 0.0);
 /// ```
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct FrameMeta {
     /// Unique frame identifier.
     pub frame_id: u64,
@@ -68,6 +70,8 @@ impl Default for FrameMeta {
 /// assert_ne!(dt, DiscourseType::Statement);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum DiscourseType {
     /// A question from the user.
     Query,

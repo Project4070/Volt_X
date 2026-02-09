@@ -5,6 +5,52 @@
 
 use crate::{NUM_RESOLUTIONS, SLOT_DIM};
 
+#[cfg(feature = "serde")]
+mod serde_helpers {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(
+        arr: &[Option<[f32; SLOT_DIM]>; NUM_RESOLUTIONS],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Convert to Vec for serialization
+        let vec: Vec<Option<Vec<f32>>> = arr
+            .iter()
+            .map(|opt| opt.as_ref().map(|a| a.to_vec()))
+            .collect();
+        vec.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<[Option<[f32; SLOT_DIM]>; NUM_RESOLUTIONS], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let vec: Vec<Option<Vec<f32>>> = Vec::deserialize(deserializer)?;
+
+        let mut arr = [const { None }; NUM_RESOLUTIONS];
+        for (i, opt_vec) in vec.into_iter().enumerate().take(NUM_RESOLUTIONS) {
+            arr[i] = opt_vec.and_then(|v| {
+                if v.len() == SLOT_DIM {
+                    let mut fixed = [0.0_f32; SLOT_DIM];
+                    fixed.copy_from_slice(&v);
+                    Some(fixed)
+                } else {
+                    None
+                }
+            });
+        }
+
+        Ok(arr)
+    }
+}
+
+
 /// Multi-resolution embedding data for a single slot.
 ///
 /// Each slot can hold embeddings at up to 4 resolution levels:
@@ -30,9 +76,12 @@ use crate::{NUM_RESOLUTIONS, SLOT_DIM};
 /// assert!(slot.resolutions[0].is_some());
 /// ```
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct SlotData {
     /// Multi-resolution embeddings for this slot.
     /// R0=discourse, R1=proposition, R2=phrase, R3=token.
+    #[cfg_attr(feature = "serde", serde(with = "serde_helpers"))]
     pub resolutions: [Option<[f32; SLOT_DIM]>; NUM_RESOLUTIONS],
 
     /// The semantic role assigned to this slot.
@@ -115,6 +164,8 @@ impl SlotData {
 /// assert_eq!(custom, SlotRole::Free(0));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum SlotRole {
     /// The entity performing the action (e.g., "user").
     Agent,
@@ -149,6 +200,8 @@ pub enum SlotRole {
 /// assert_eq!(meta.certainty, 0.0);
 /// ```
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct SlotMeta {
     /// Per-slot certainty score (gamma, γ). Range: 0.0 to 1.0.
     /// 0.0 = completely uncertain, 1.0 = fully certain.
@@ -186,6 +239,8 @@ impl Default for SlotMeta {
 /// assert_ne!(source, SlotSource::SoftCore);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum SlotSource {
     /// Slot is empty / unused.
     Empty,
