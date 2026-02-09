@@ -1,0 +1,244 @@
+{
+  "name": "Volt X Chat",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Chat Trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/api/think",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.chatInput }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Think Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [420, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": ""
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.text }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "isNotEmpty"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputLabel": "Success"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": ""
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.error }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "isNotEmpty"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputLabel": "Error"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "Route Response",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "response",
+              "value": "={{ $json.text }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "debug_strand_id",
+              "value": "={{ $json.strand_id }}",
+              "type": "number"
+            },
+            {
+              "id": "a3",
+              "name": "debug_iterations",
+              "value": "={{ $json.iterations }}",
+              "type": "number"
+            },
+            {
+              "id": "a4",
+              "name": "debug_timing_total_ms",
+              "value": "={{ $json.timing_ms.total_ms }}",
+              "type": "number"
+            },
+            {
+              "id": "a5",
+              "name": "debug_timing_encode_ms",
+              "value": "={{ $json.timing_ms.encode_ms }}",
+              "type": "number"
+            },
+            {
+              "id": "a6",
+              "name": "debug_timing_decode_ms",
+              "value": "={{ $json.timing_ms.decode_ms }}",
+              "type": "number"
+            },
+            {
+              "id": "a7",
+              "name": "debug_slot_count",
+              "value": "={{ $json.slot_states.length }}",
+              "type": "number"
+            },
+            {
+              "id": "a8",
+              "name": "debug_slots",
+              "value": "={{ JSON.stringify($json.slot_states, null, 2) }}",
+              "type": "string"
+            },
+            {
+              "id": "a9",
+              "name": "debug_gamma",
+              "value": "={{ $json.gamma.join(', ') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000004",
+      "name": "Debug Panel",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [860, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.response }}"
+      },
+      "id": "a1b2c3d4-0005-4000-8000-000000000005",
+      "name": "Chat Reply",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [1080, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ 'Error: ' + ($json.error || 'Server unavailable. Is Volt X running on port 8080?') }}"
+      },
+      "id": "a1b2c3d4-0006-4000-8000-000000000006",
+      "name": "Chat Reply Error",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [860, 440]
+    }
+  ],
+  "connections": {
+    "Chat Trigger": {
+      "main": [
+        [
+          {
+            "node": "Think Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Think Request": {
+      "main": [
+        [
+          {
+            "node": "Route Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Response": {
+      "main": [
+        [
+          {
+            "node": "Debug Panel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Chat Reply Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Debug Panel": {
+      "main": [
+        [
+          {
+            "node": "Chat Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "volt-x-local"
+  },
+  "tags": [
+    {
+      "name": "volt-x"
+    }
+  ]
+}

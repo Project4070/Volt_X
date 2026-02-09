@@ -24,13 +24,22 @@ pub struct ThinkRequest {
 /// # Example
 ///
 /// ```
-/// use volt_server::models::ThinkResponse;
+/// use volt_server::models::{ThinkResponse, SlotState, TimingMs};
 ///
 /// let resp = ThinkResponse {
 ///     text: "cat sat mat.".into(),
 ///     gamma: vec![0.8, 0.8, 0.8],
 ///     strand_id: 0,
 ///     iterations: 1,
+///     slot_states: vec![SlotState {
+///         index: 0,
+///         role: "Agent".into(),
+///         word: "cat".into(),
+///         certainty: 0.8,
+///         source: "Translator".into(),
+///         resolution_count: 1,
+///     }],
+///     timing_ms: TimingMs { encode_ms: 0.1, decode_ms: 0.05, total_ms: 0.15 },
 /// };
 /// let json = serde_json::to_string(&resp).unwrap();
 /// assert!(json.contains("cat sat mat"));
@@ -45,6 +54,65 @@ pub struct ThinkResponse {
     pub strand_id: u64,
     /// Number of RAR iterations (always 1 for stub).
     pub iterations: u32,
+    /// Per-slot debug state for all active slots.
+    pub slot_states: Vec<SlotState>,
+    /// Timing breakdown in milliseconds.
+    pub timing_ms: TimingMs,
+}
+
+/// Debug information for a single active slot in the TensorFrame.
+///
+/// # Example
+///
+/// ```
+/// use volt_server::models::SlotState;
+///
+/// let state = SlotState {
+///     index: 0,
+///     role: "Agent".into(),
+///     word: "cat".into(),
+///     certainty: 0.8,
+///     source: "Translator".into(),
+///     resolution_count: 1,
+/// };
+/// let json = serde_json::to_string(&state).unwrap();
+/// assert!(json.contains("Agent"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlotState {
+    /// Slot index (0-15).
+    pub index: usize,
+    /// Semantic role name (e.g., "Agent", "Predicate", "Patient").
+    pub role: String,
+    /// The decoded word for this slot.
+    pub word: String,
+    /// Per-slot certainty (gamma), range 0.0 to 1.0.
+    pub certainty: f32,
+    /// Data source name (e.g., "Translator", "SoftCore").
+    pub source: String,
+    /// Number of populated resolution levels (0-4).
+    pub resolution_count: u32,
+}
+
+/// Timing breakdown for a single think operation, in milliseconds.
+///
+/// # Example
+///
+/// ```
+/// use volt_server::models::TimingMs;
+///
+/// let timing = TimingMs { encode_ms: 0.5, decode_ms: 0.3, total_ms: 0.8 };
+/// let json = serde_json::to_string(&timing).unwrap();
+/// assert!(json.contains("total_ms"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimingMs {
+    /// Time spent encoding text to TensorFrame (ms).
+    pub encode_ms: f64,
+    /// Time spent decoding TensorFrame to text (ms).
+    pub decode_ms: f64,
+    /// Total end-to-end time (ms).
+    pub total_ms: f64,
 }
 
 /// Error response body.

@@ -1,16 +1,19 @@
 //! Axum route handlers for the HTTP API.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 
-use volt_core::MAX_SLOTS;
+use volt_core::slot::SlotSource;
+use volt_core::{SlotRole, MAX_SLOTS};
+use volt_translate::decode::format_output;
 use volt_translate::Translator;
 
-use crate::models::{ErrorResponse, HealthResponse, ThinkRequest, ThinkResponse};
+use crate::models::{ErrorResponse, HealthResponse, SlotState, ThinkRequest, ThinkResponse, TimingMs};
 use crate::state::AppState;
 
 /// `GET /health` — health check endpoint.
@@ -43,7 +46,10 @@ pub async fn think(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ThinkRequest>,
 ) -> Result<Json<ThinkResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let total_start = Instant::now();
+
     // Encode: text -> TensorFrame
+    let encode_start = Instant::now();
     let output = state.translator.encode(&request.text).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -52,6 +58,7 @@ pub async fn think(
             }),
         )
     })?;
+    let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
 
     // Extract gamma values from active slots
     let gamma: Vec<f32> = (0..MAX_SLOTS)
@@ -59,20 +66,81 @@ pub async fn think(
         .map(|i| output.frame.meta[i].certainty)
         .collect();
 
-    // Decode: TensorFrame -> text
-    let decoded_text = state.translator.decode(&output.frame).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("decode failed: {e}"),
-            }),
-        )
-    })?;
+    // Decode: TensorFrame -> per-slot words and full text
+    let decode_start = Instant::now();
+    let slot_words = state
+        .translator
+        .decode_slots(&output.frame)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("decode failed: {e}"),
+                }),
+            )
+        })?;
+    let decoded_text = format_output(&slot_words);
+    let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
+
+    let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
+
+    // Build per-slot debug state
+    let slot_states: Vec<SlotState> = slot_words
+        .iter()
+        .map(|(index, role, word)| {
+            let res_count = output.frame.slots[*index]
+                .as_ref()
+                .map(|s| s.active_resolution_count() as u32)
+                .unwrap_or(0);
+            SlotState {
+                index: *index,
+                role: format_role(role),
+                word: word.clone(),
+                certainty: output.frame.meta[*index].certainty,
+                source: format_source(&output.frame.meta[*index].source),
+                resolution_count: res_count,
+            }
+        })
+        .collect();
 
     Ok(Json(ThinkResponse {
         text: decoded_text,
         gamma,
         strand_id: output.frame.frame_meta.strand_id,
         iterations: 1,
+        slot_states,
+        timing_ms: TimingMs {
+            encode_ms,
+            decode_ms,
+            total_ms,
+        },
     }))
+}
+
+/// Format a [`SlotRole`] to a human-readable string.
+fn format_role(role: &SlotRole) -> String {
+    match role {
+        SlotRole::Agent => "Agent".to_string(),
+        SlotRole::Predicate => "Predicate".to_string(),
+        SlotRole::Patient => "Patient".to_string(),
+        SlotRole::Location => "Location".to_string(),
+        SlotRole::Time => "Time".to_string(),
+        SlotRole::Manner => "Manner".to_string(),
+        SlotRole::Instrument => "Instrument".to_string(),
+        SlotRole::Cause => "Cause".to_string(),
+        SlotRole::Result => "Result".to_string(),
+        SlotRole::Free(n) => format!("Free({n})"),
+    }
+}
+
+/// Format a [`SlotSource`] to a human-readable string.
+fn format_source(source: &SlotSource) -> String {
+    match source {
+        SlotSource::Empty => "Empty".to_string(),
+        SlotSource::Translator => "Translator".to_string(),
+        SlotSource::SoftCore => "SoftCore".to_string(),
+        SlotSource::HardCore => "HardCore".to_string(),
+        SlotSource::Memory => "Memory".to_string(),
+        SlotSource::Personal => "Personal".to_string(),
+    }
 }

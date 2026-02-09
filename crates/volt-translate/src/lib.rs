@@ -24,7 +24,7 @@ pub mod stub;
 pub use stub::StubTranslator;
 pub use volt_core;
 
-use volt_core::{TensorFrame, VoltError};
+use volt_core::{SlotRole, TensorFrame, VoltError};
 
 /// Output of a forward translation (text -> frame).
 ///
@@ -77,4 +77,27 @@ pub trait Translator {
     ///
     /// Returns a string representation of the frame contents.
     fn decode(&self, frame: &TensorFrame) -> Result<String, VoltError>;
+
+    /// Decode each active slot individually.
+    ///
+    /// Returns a vec of `(slot_index, role, decoded_word)` tuples for
+    /// every slot that has data. Used for debug output where a per-slot
+    /// breakdown is needed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_translate::{StubTranslator, Translator};
+    /// use volt_core::SlotRole;
+    ///
+    /// let t = StubTranslator::new();
+    /// let output = t.encode("cat sat mat").unwrap();
+    /// let slots = t.decode_slots(&output.frame).unwrap();
+    /// assert_eq!(slots.len(), 3);
+    /// assert_eq!(slots[0].1, SlotRole::Agent);
+    /// ```
+    fn decode_slots(
+        &self,
+        frame: &TensorFrame,
+    ) -> Result<Vec<(usize, SlotRole, String)>, VoltError>;
 }

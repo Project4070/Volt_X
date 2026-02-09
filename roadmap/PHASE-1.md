@@ -135,6 +135,15 @@ You now have a testable end-to-end system. Text goes in, TensorFrame flows throu
 
 **Duration:** 2 weeks.
 
+**Status:** ✅ **COMPLETED** (Commit TBD)
+
+- Extended `ThinkResponse` with `slot_states` (per-slot debug: index, role, word, certainty, source, resolution_count) and `timing_ms` (encode/decode/total breakdown)
+- Added `decode_slots()` to `Translator` trait for per-slot decoding
+- n8n workflow JSON: Chat Trigger → HTTP Request → Switch → Debug Panel (Set) → Chat Reply
+- 10 integration tests + 9 doc tests passing in volt-server (added slot_states role validation + timing consistency tests)
+- 2 new unit tests in volt-translate for decode_slots
+- Zero clippy warnings
+
 ---
 
 ## Phase 1 Checkpoint

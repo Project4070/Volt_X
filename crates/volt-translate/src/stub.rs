@@ -159,6 +159,14 @@ impl Translator for StubTranslator {
     }
 
     fn decode(&self, frame: &TensorFrame) -> Result<String, VoltError> {
+        let slot_words = self.decode_slots(frame)?;
+        Ok(format_output(&slot_words))
+    }
+
+    fn decode_slots(
+        &self,
+        frame: &TensorFrame,
+    ) -> Result<Vec<(usize, SlotRole, String)>, VoltError> {
         let vocab = self.vocab.read().map_err(|e| VoltError::TranslateError {
             message: format!("failed to acquire vocab read lock: {e}"),
         })?;
@@ -183,7 +191,7 @@ impl Translator for StubTranslator {
             }
         }
 
-        Ok(format_output(&slot_words))
+        Ok(slot_words)
     }
 }
 
@@ -275,6 +283,29 @@ mod tests {
     #[test]
     fn classify_discourse_statement() {
         assert_eq!(classify_discourse("the sky is blue."), DiscourseType::Statement);
+    }
+
+    #[test]
+    fn decode_slots_returns_per_slot_breakdown() {
+        let t = StubTranslator::new();
+        let output = t.encode("cat sat mat").unwrap();
+        let slots = t.decode_slots(&output.frame).unwrap();
+        assert_eq!(slots.len(), 3);
+        assert_eq!(slots[0].0, 0);
+        assert_eq!(slots[0].1, SlotRole::Agent);
+        assert!(slots[0].2.contains("cat"), "expected 'cat', got '{}'", slots[0].2);
+        assert_eq!(slots[1].0, 1);
+        assert_eq!(slots[1].1, SlotRole::Predicate);
+        assert_eq!(slots[2].0, 2);
+        assert_eq!(slots[2].1, SlotRole::Patient);
+    }
+
+    #[test]
+    fn decode_slots_empty_frame() {
+        let t = StubTranslator::new();
+        let frame = TensorFrame::new();
+        let slots = t.decode_slots(&frame).unwrap();
+        assert!(slots.is_empty());
     }
 
     #[test]
