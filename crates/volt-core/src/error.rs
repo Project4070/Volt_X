@@ -75,6 +75,13 @@ pub enum VoltError {
         message: String,
     },
 
+    /// A translate operation failed.
+    #[error("translate error: {message}")]
+    TranslateError {
+        /// Description of what went wrong.
+        message: String,
+    },
+
     /// A safety invariant was violated.
     #[error("safety violation: {message}")]
     SafetyViolation {

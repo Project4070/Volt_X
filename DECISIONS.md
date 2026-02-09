@@ -62,3 +62,22 @@ can be jailbroken, not suitable for sovereign AI).
 ## ADR-008: Rust Edition 2024 (2026-02-09)
 **Decision:** Use Rust edition 2024 for all crates.
 **Reason:** Latest stable edition with improved ergonomics.
+
+## ADR-009: VoltError::TranslateError Variant (2026-02-09)
+**Decision:** Add `TranslateError { message: String }` variant to VoltError.
+**Reason:** Translate operations have distinct failure modes (empty input,
+oversized input, vocabulary lock errors) that should be distinguishable
+from FrameError or BusError. Follows the existing pattern of per-domain
+error variants (BusError, StorageError, etc.).
+**Alternatives considered:** Reuse FrameError (rejected: misleading context),
+separate TranslateError type (rejected: breaks unified VoltError pattern).
+
+## ADR-010: Axum 0.8 for HTTP Server (2026-02-09)
+**Decision:** Use Axum 0.8 as the HTTP framework for volt-server.
+**Reason:** Axum is the most popular async Rust web framework, built on
+tokio and tower. Zero-cost routing, type-safe extractors, excellent
+ecosystem. `build_app()` returns a Router testable via tower oneshot
+without starting a TCP listener.
+**Alternatives considered:** Actix-web (rejected: different async runtime,
+not tower-native), Warp (rejected: less ergonomic, smaller community),
+raw hyper (rejected: too low-level for milestone pace).
