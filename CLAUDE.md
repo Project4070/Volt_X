@@ -5,9 +5,32 @@ Volt X is a cognitive architecture implementing a stateful AI operating
 system. It uses Tensor Frames (not flat vectors), Root-Attend-Refine 
 inference (not transformers), and three-tier memory (not context windows).
 
-## Architecture Reference
-Read ARCHITECTURE.md for the full design. Read DECISIONS.md for past 
-architectural decisions and their rationale.
+## Context Documents — Read Before Working
+
+When starting a new session or task, read the relevant documents below
+to load context efficiently. Do NOT read the full master roadmap
+(`VOLT X — Roadmap.md`) — use the per-phase extracts instead.
+
+### Always Read
+
+- `ARCHITECTURE.md` — Full technical design reference
+- `DECISIONS.md` — Past architectural decisions and rationale
+
+### Roadmap (read only the current phase)
+
+- `roadmap/MILESTONE-0.md` — Test harness setup (Week 0)
+- `roadmap/PHASE-1.md` — The Skeleton: TensorFrame, LLL, Stub Server (Months 1-2)
+- `roadmap/PHASE-2.md` — The Soft Core: Codebook, Translator, RAR, GPU (Months 3-4)
+- `roadmap/PHASE-3.md` — The Hard Core: Router, Strands, Safety (Months 5-6)
+- `roadmap/PHASE-4.md` — Memory: VoltDB T0/T1/T2, HNSW, GC (Months 7-8)
+- `roadmap/PHASE-5.md` — Learning: Events, Sleep, RLVF (Months 9-10)
+- `roadmap/PHASE-6.md` — Ecosystem: Modules, Commons, P2P (Months 11-12)
+
+### Other Reference (read when needed)
+
+- `VOLT X — Master Blueprint.md` — Full system design narrative
+- `SVGs.md` — Visual architecture diagrams (large file, read in 500-line chunks)
+- `VOLT X — Roadmap.md` — Full master roadmap (prefer per-phase files above)
 
 ## Code Standards
 

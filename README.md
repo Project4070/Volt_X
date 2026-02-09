@@ -139,6 +139,15 @@ cargo b   # bench
 
 `volt-core` is fully implemented with TensorFrame, slot management, certainty propagation, and complete test coverage (35 tests including doc tests). All other crates have their dependency wiring and architecture stubs in place. See the milestone TODOs in each crate's `lib.rs` for what's next.
 
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
+This means you are free to use, modify, and distribute this software
+(including commercially), but any derivative work must also be released
+under AGPL v3, and users who interact with it over a network must be
+given access to the source code.
+
 ## Design References
 
 - ARCHITECTURE.md — full technical specification
