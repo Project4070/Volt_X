@@ -95,6 +95,22 @@ impl Linear {
     pub(crate) fn out_dim(&self) -> usize {
         self.out_dim
     }
+
+    /// Returns a reference to the weight matrix (row-major, `out_dim × in_dim`).
+    ///
+    /// Used by GPU modules to transfer weights to candle tensors.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn weights(&self) -> &[f32] {
+        &self.weights
+    }
+
+    /// Returns a reference to the bias vector (`out_dim` elements).
+    ///
+    /// Used by GPU modules to transfer weights to candle tensors.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn bias(&self) -> &[f32] {
+        &self.bias
+    }
 }
 
 #[cfg(test)]

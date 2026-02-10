@@ -7,10 +7,16 @@ edition.workspace = true
 volt-core.workspace = true
 volt-bus.workspace = true
 thiserror.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+
+# GPU-only dependencies (compiled only with `gpu` feature)
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
 
 [features]
 default = []
-gpu = []
+gpu = ["dep:candle-core", "dep:candle-nn"]
 
 [dev-dependencies]
 proptest.workspace = true

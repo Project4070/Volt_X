@@ -14,6 +14,7 @@
 //! is exhausted.
 
 use crate::attention::SlotAttention;
+use crate::diffusion::{self, DiffusionConfig};
 use crate::vfn::Vfn;
 use volt_core::{TensorFrame, VoltError, MAX_SLOTS, NUM_RESOLUTIONS, SLOT_DIM};
 
@@ -44,6 +45,10 @@ pub struct RarConfig {
 
     /// Which resolution level to operate on (0=R₀ discourse, 1=R₁ proposition, etc.).
     pub resolution: usize,
+
+    /// Optional diffusion noise injection configuration.
+    /// `None` disables noise (backward compatible with Milestone 2.3).
+    pub diffusion: Option<DiffusionConfig>,
 }
 
 impl Default for RarConfig {
@@ -54,6 +59,7 @@ impl Default for RarConfig {
             dt: 0.1,
             beta: 0.5,
             resolution: 0,
+            diffusion: None,
         }
     }
 }
@@ -102,11 +108,11 @@ pub struct RarResult {
 ///
 /// # Example
 ///
-/// ```
+/// ```no_run
 /// use volt_soft::rar::{rar_loop, RarConfig};
 /// use volt_soft::vfn::Vfn;
 /// use volt_soft::attention::SlotAttention;
-/// use volt_core::{TensorFrame, SlotData, SlotRole, SLOT_DIM};
+/// use volt_core::{TensorFrame, SlotRole, SLOT_DIM};
 ///
 /// let vfn = Vfn::new_random(42);
 /// let attn = SlotAttention::new_random(43);
@@ -194,6 +200,27 @@ pub fn rar_loop(
         // but messages are only used for non-converged slots.
         let messages = attention.forward(&states)?;
 
+        // === DIFFUSION NOISE ===
+        // Use Option<Box<...>> to avoid 16KB stack allocation when diffusion is off
+        let noise_vectors = if let Some(ref diff_config) = config.diffusion {
+            let active_mask = {
+                let mut mask = [false; MAX_SLOTS];
+                for (i, conv) in converged.iter().enumerate() {
+                    if !conv {
+                        mask[i] = states[i].is_some();
+                    }
+                }
+                mask
+            };
+            Some(Box::new(diffusion::generate_noise(
+                diff_config,
+                &active_mask,
+                iteration,
+            )?))
+        } else {
+            None
+        };
+
         // === REFINE PHASE ===
         for i in 0..MAX_SLOTS {
             if converged[i] {
@@ -202,10 +229,19 @@ pub fn rar_loop(
             if let (Some(state), Some(drift)) = (&states[i], &drifts[i]) {
                 let msg = &messages[i];
 
-                // State update: S_i(t+1) = S_i(t) + dt × (drift + β·msg)
+                // State update: S_i(t+1) = S_i(t) + dt × (drift + β·msg) + noise
                 let mut new_state = [0.0f32; SLOT_DIM];
                 for d in 0..SLOT_DIM {
                     new_state[d] = state[d] + config.dt * (drift[d] + config.beta * msg[d]);
+                }
+
+                // Add diffusion noise if present
+                if let Some(ref noise_arr) = noise_vectors
+                    && let Some(noise) = &noise_arr[i]
+                {
+                    for d in 0..SLOT_DIM {
+                        new_state[d] += noise[d];
+                    }
                 }
 
                 // L2 normalize to unit hypersphere

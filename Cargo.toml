@@ -34,6 +34,10 @@ tracing-subscriber = "0.3"
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
 hnsw_rs = "0.3"
+rand = "0.9"
+rand_distr = "0.5"
+candle-core = "0.8"
+candle-nn = "0.8"
 
 # Internal crate dependencies
 volt-core = { path = "crates/volt-core" }

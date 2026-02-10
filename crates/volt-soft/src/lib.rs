@@ -21,20 +21,34 @@
 //! - Feature-gated: `cargo test --features gpu` for GPU tests.
 //! - Depends on `volt-core` and `volt-bus`.
 //!
-//! ## Milestone 2.3: CPU-Only RAR
+//! ## Milestones
 //!
-//! Current implementation is CPU-only with randomly initialized weights.
-//! GPU port and VFN training come in Milestone 2.4.
+//! - **2.3** (complete): CPU-only RAR with randomly initialized weights
+//! - **2.4** (current): GPU port via candle, diffusion noise, Flow Matching training
+//!
+//! ## GPU Support
+//!
+//! GPU-accelerated RAR is available behind the `gpu` feature:
+//! ```bash
+//! cargo test -p volt-soft --features gpu
+//! ```
 
 pub use volt_core;
 
 // Internal shared primitives
 mod nn;
 
-// Public modules
+// Public modules — always compiled (CPU path)
 pub mod attention;
+pub mod diffusion;
 pub mod rar;
 pub mod vfn;
+
+// GPU modules — compiled only with `gpu` feature
+#[cfg(feature = "gpu")]
+pub mod gpu;
+#[cfg(feature = "gpu")]
+pub mod training;
 
 use volt_core::{TensorFrame, VoltError};
 
@@ -59,11 +73,6 @@ pub fn process_stub(frame: &TensorFrame) -> Result<TensorFrame, VoltError> {
     Ok(frame.clone())
 }
 
-// MILESTONE: 2.4 — GPU port of RAR loop
-// TODO: Port Root phase to CUDA (batched VFN passes)
-// TODO: Port Attend phase to CUDA (batched matrix multiply)
-// TODO: Add diffusion noise injection
-// TODO: Train VFN via Flow Matching
 
 #[cfg(test)]
 mod tests {

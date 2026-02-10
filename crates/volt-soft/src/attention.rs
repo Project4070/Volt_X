@@ -165,6 +165,15 @@ impl SlotAttention {
 
         Ok(messages)
     }
+
+    /// Returns references to the Q, K, V projection layers.
+    ///
+    /// Used by [`crate::gpu::attention::GpuSlotAttention::from_cpu_attention`]
+    /// to transfer weights to candle tensors.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn projections(&self) -> (&Linear, &Linear, &Linear) {
+        (&self.wq, &self.wk, &self.wv)
+    }
 }
 
 #[cfg(test)]

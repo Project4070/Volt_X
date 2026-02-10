@@ -126,3 +126,29 @@ scaled dot-product softmax. RAR update rule:
 **Alternatives considered:** Start with GPU directly (rejected: debugging
 too painful), use candle/tch for CPU ops (rejected: adds heavy
 dependency for simple matrix math that pure Rust handles fine).
+
+## ADR-014: candle for GPU ML Operations (2026-02-10)
+
+**Decision:** Use `candle-core` + `candle-nn` (0.8) for GPU-accelerated
+RAR inference and VFN training in Milestone 2.4.
+**Reason:** candle provides native Rust ML tensor operations with CUDA
+backend, autograd for Flow Matching training (requires backprop through
+VFN), batched matmul for attention, and CPU fallback for development/CI.
+Feature-gated behind `gpu` — without the feature, only pure-Rust CPU
+code compiles (zero impact on existing Milestone 2.3 code).
+**Alternatives considered:** cudarc (rejected: too low-level, no autograd,
+would need to implement matmul/softmax/backprop from scratch), tch-rs
+(rejected: requires libtorch C++ bindings, harder build on Windows),
+wgpu (rejected: compute shaders are lower-level than needed, no autograd).
+
+## ADR-015: rand for Diffusion Noise Generation (2026-02-10)
+
+**Decision:** Use `rand` 0.9 for Gaussian noise generation in the
+diffusion noise controller.
+**Reason:** Diffusion noise injection needs proper Gaussian random
+numbers. The existing `nn::Rng` (splitmix64) only produces uniform
+samples. `rand` with `rand_distr::Normal` provides well-tested Gaussian
+sampling with seedable deterministic RNGs (StdRng/SmallRng).
+**Alternatives considered:** Extend nn::Rng with Box-Muller (rejected:
+reimplementing well-tested math), no diffusion noise (rejected: required
+by Milestone 2.4 spec).

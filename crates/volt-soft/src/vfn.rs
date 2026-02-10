@@ -132,6 +132,15 @@ impl Vfn {
 
         Ok(result)
     }
+
+    /// Returns references to the three internal linear layers.
+    ///
+    /// Used by [`crate::gpu::vfn::GpuVfn::from_cpu_vfn`] to transfer
+    /// weights to candle tensors.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn layers(&self) -> (&Linear, &Linear, &Linear) {
+        (&self.layer1, &self.layer2, &self.layer3)
+    }
 }
 
 #[cfg(test)]

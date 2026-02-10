@@ -77,6 +77,7 @@ fn milestone_rar_converges() {
         dt: 0.1,
         beta: 0.5,
         resolution: 0,
+        ..RarConfig::default()
     };
 
     let frame = make_frame(4);
@@ -126,6 +127,7 @@ fn milestone_easy_input_converges_fast() {
         dt: 0.05,
         beta: 0.3,
         resolution: 0,
+        ..RarConfig::default()
     };
 
     // Easy: 2 filled slots
@@ -159,6 +161,7 @@ fn milestone_complex_input_takes_more_iterations() {
         dt: 0.05,
         beta: 0.3,
         resolution: 0,
+        ..RarConfig::default()
     };
 
     // Easy: 2 slots
@@ -200,6 +203,7 @@ fn milestone_frozen_slots_stable() {
         dt: 0.1,
         beta: 0.5,
         resolution: 0,
+        ..RarConfig::default()
     };
 
     let frame = make_frame(4);
@@ -231,6 +235,7 @@ fn milestone_frozen_slots_stable() {
         dt: 0.1,
         beta: 0.5,
         resolution: 0,
+        ..RarConfig::default()
     };
 
     // Run 1 iteration
@@ -282,6 +287,7 @@ fn milestone_cpu_timing() {
         dt: 0.1,
         beta: 0.5,
         resolution: 0,
+        ..RarConfig::default()
     };
 
     // Worst case: all 16 slots active
