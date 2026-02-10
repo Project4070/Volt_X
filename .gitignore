@@ -9,13 +9,20 @@
 
 # IDE
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # OS
 .DS_Store
 Thumbs.db
+nul
+desktop.ini
+ehthumbs.db
 
 # Data (models are too large for git)
 data/models/*.bin
@@ -31,10 +38,12 @@ logs/
 # Environment
 .env
 .env.local
+.env.*
 
 # Coverage
 lcov.info
 tarpaulin-report.html
+coverage/
 
 # Benchmark results (regenerated on each run)
 target/criterion/
