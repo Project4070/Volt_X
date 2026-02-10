@@ -7,7 +7,7 @@ Replace the stub processor with actual GPU-based RAR reasoning. The system shoul
 
 ---
 
-## Milestone 2.1: VQ-VAE Codebook (Week 9-10)
+## Milestone 2.1: VQ-VAE Codebook (Week 9-10) ✅ DONE
 
 **Crate:** `volt-bus` (extend)
 
@@ -27,12 +27,12 @@ Replace the stub processor with actual GPU-based RAR reasoning. The system shoul
 
 ---
 
-## Milestone 2.2: Real Forward Translator (Week 11-13)
+## Milestone 2.2: Real Forward Translator (Week 11-13) ✅ DONE
 
 **Crate:** `volt-translate` (replace stub)
 
 ### What You Build
-- Load a frozen LLM backbone (start small: `TinyLlama-1.1B` or `Phi-2`) via `candle` or `llama.cpp` bindings
+- Load a frozen LLM backbone (Qwen3-0.6B via `candle-transformers` Qwen2 module)
 - Frame Projection Head: lightweight MLP (3 layers, 50M params) mapping LLM hidden states -> slot assignments + slot vectors
 - Training pipeline:
   - Download PropBank/FrameNet data
@@ -86,7 +86,7 @@ GPU debugging is hell. CUDA errors are opaque. CPU debugging is transparent: you
 
 ---
 
-## Milestone 2.4: GPU Port + VFN Training (Week 16-18)
+## Milestone 2.4: GPU Port + VFN Training (Week 16-18) ✅ DONE
 
 **Crate:** `volt-soft` (extend)
 

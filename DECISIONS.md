@@ -152,3 +152,25 @@ sampling with seedable deterministic RNGs (StdRng/SmallRng).
 **Alternatives considered:** Extend nn::Rng with Box-Muller (rejected:
 reimplementing well-tested math), no diffusion noise (rejected: required
 by Milestone 2.4 spec).
+
+## ADR-016: Qwen3-0.6B via candle-transformers for LLM Backbone (2026-02-10)
+
+**Decision:** Use Qwen3-0.6B (`Qwen/Qwen3-0.6B`) as the frozen LLM
+backbone for the forward translator (Milestone 2.2), loaded via
+`candle-transformers` 0.8 (Qwen2 module) and tokenized with `tokenizers`
+0.20.
+**Reason:** Qwen3-0.6B is a modern (2025) small LLM with hidden_dim=1024,
+151K vocabulary covering 119 languages, and GQA+SwiGLU+RoPE+RMSNorm
+architecture. At ~600MB safetensors it is small enough for consumer
+hardware. candle-transformers provides a ready-made Qwen2 model
+implementation (`candle_transformers::models::qwen2`) which supports
+Qwen3 (same architecture). Training happens in Python (PyTorch), weights
+exported as safetensors, inference in Rust (candle). This follows the
+same Python-train / Rust-infer split established by `tools/codebook_init.py`
+in Milestone 2.1.
+**Feature gating:** All LLM dependencies behind `llm` feature in
+volt-translate, following the `gpu` feature pattern in volt-soft.
+**Alternatives considered:** TinyLlama-1.1B (rejected: older model,
+larger at 2.2GB f16), Phi-2 (rejected: 2.7B params, overkill for
+semantic role labeling), llama.cpp bindings (rejected: C++ build
+dependency), full Python inference server (rejected: adds network code).

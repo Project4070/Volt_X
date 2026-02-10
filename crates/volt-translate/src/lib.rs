@@ -21,8 +21,14 @@ pub mod decode;
 pub mod encode;
 pub mod stub;
 
+#[cfg(feature = "llm")]
+pub mod llm;
+
 pub use stub::StubTranslator;
 pub use volt_core;
+
+#[cfg(feature = "llm")]
+pub use llm::LlmTranslator;
 
 use volt_core::{SlotRole, TensorFrame, VoltError};
 

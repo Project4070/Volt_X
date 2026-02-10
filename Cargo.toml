@@ -38,6 +38,9 @@ rand = "0.9"
 rand_distr = "0.5"
 candle-core = "0.8"
 candle-nn = "0.8"
+candle-transformers = "0.8"
+tokenizers = "0.20"
+serde_plain = "1"
 
 # Internal crate dependencies
 volt-core = { path = "crates/volt-core" }
