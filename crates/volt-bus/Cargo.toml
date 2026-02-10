@@ -8,10 +8,13 @@ volt-core.workspace = true
 thiserror.workspace = true
 rustfft = "6.2"
 num-complex = "0.4"
+hnsw_rs.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 criterion.workspace = true
+rand = "0.9"
+tempfile = "3"
 
 [[bench]]
 name = "algebra_bench"

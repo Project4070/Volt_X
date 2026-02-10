@@ -81,3 +81,48 @@ without starting a TCP listener.
 **Alternatives considered:** Actix-web (rejected: different async runtime,
 not tower-native), Warp (rejected: less ergonomic, smaller community),
 raw hyper (rejected: too low-level for milestone pace).
+
+## ADR-011: hnsw_rs for Codebook HNSW Index (2026-02-10)
+
+**Decision:** Use `hnsw_rs` 0.3 as the HNSW index library for the VQ-VAE
+codebook in volt-bus (Milestone 2.1).
+**Reason:** Pure Rust implementation of HNSW (Malkov & Yashunin). Provides
+`DistCosine` out of the box, sub-millisecond queries over 65K entries, and
+thread-safe concurrent reads. The codebook's `quantize()` function needs
+fast approximate nearest-neighbor search — brute force over 65,536 × 256
+would be ~2-5ms, above the 0.5ms target.
+**Alternatives considered:** `instant-distance` (rejected: less mature,
+fewer distance metrics), `hnswlib-rs` (rejected: C++ bindings add build
+complexity on Windows), custom HNSW (rejected: unnecessary when a
+well-maintained crate exists).
+
+## ADR-012: Codebook Binary Format (2026-02-10)
+
+**Decision:** Use a simple custom binary format (VXCB magic + version +
+entry count + dim + raw f32 LE data) for codebook persistence.
+**Reason:** The codebook needs to be produced by a Python script (K-Means
+over word embeddings) and consumed by Rust. A raw binary format is trivial
+to read/write from both languages. The HNSW index is rebuilt on load rather
+than serialized, keeping the format simple and portable.
+**Alternatives considered:** rkyv (rejected: Python can't produce rkyv
+output), protobuf/flatbuffers (rejected: unnecessary complexity for a
+flat f32 array), NumPy .npy (rejected: adds npy parsing dependency to Rust).
+
+## ADR-013: CPU-First RAR Implementation (2026-02-10)
+
+**Decision:** Implement RAR inference loop on CPU first (Milestone 2.3),
+with GPU port deferred to Milestone 2.4.
+**Reason:** GPU debugging is opaque (CUDA errors are cryptic). CPU
+implementation allows stepping through every value in a debugger. The
+algorithm can be verified correct on CPU, then ported to GPU with
+confidence. CPU implementation uses pure Rust with no external NN
+framework — just manual matrix multiplications and ReLU activations.
+**Architecture:** VFN is a 3-layer MLP (256→512→512→256) with Xavier
+init. Cross-slot attention uses Q/K/V projections (256→256) with
+scaled dot-product softmax. RAR update rule:
+`S_i(t+1) = normalize(S_i(t) + dt × (drift_i + β·msg_i))`.
+**Performance:** 50 iterations with 16 slots completes in ~288ms
+(release build), well under the 500ms target.
+**Alternatives considered:** Start with GPU directly (rejected: debugging
+too painful), use candle/tch for CPU ops (rejected: adds heavy
+dependency for simple matrix math that pure Rust handles fine).

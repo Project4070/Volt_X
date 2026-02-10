@@ -62,6 +62,7 @@ pub use volt_core;
 mod fft;
 mod ops;
 mod batch;
+pub mod codebook;
 
 // Public API: Single-vector operations
 pub use ops::{bind, unbind, superpose, permute, similarity};
