@@ -6,6 +6,10 @@
 //! - **[`strand::HardStrand`]**: Pluggable trait for CPU-side tools
 //! - **[`router::IntentRouter`]**: Routes frame slots to Hard Strands by cosine similarity
 //! - **[`math_engine::MathEngine`]**: Exact arithmetic, algebra, basic calculus
+//! - **[`hdc_algebra::HDCAlgebra`]**: Compositional reasoning via HDC operations
+//! - **[`certainty_engine::CertaintyEngine`]**: Min-rule gamma propagation
+//! - **[`proof_constructor::ProofConstructor`]**: Proof chain recording
+//! - **[`pipeline::HardCorePipeline`]**: Integrated processing pipeline
 //!
 //! ## Architecture Rules
 //!
@@ -20,20 +24,27 @@
 //! cosine similarity against registered Hard Strand capability vectors,
 //! and routes to the best match. The MathEngine handles exact arithmetic.
 //!
+//! ## Milestone 3.2: More Hard Strands + Pipeline
+//!
+//! Added HDCAlgebra for compositional reasoning, CodeRunner for sandboxed
+//! WASM execution, CertaintyEngine for min-rule gamma propagation,
+//! ProofConstructor for proof chain recording, and HardCorePipeline to
+//! integrate them all.
+//!
 //! ## Usage
 //!
 //! ```
-//! use volt_hard::router::IntentRouter;
+//! use volt_hard::pipeline::HardCorePipeline;
 //! use volt_hard::math_engine::MathEngine;
 //! use volt_hard::strand::HardStrand;
 //! use volt_core::{TensorFrame, SlotData, SlotRole, SLOT_DIM};
 //!
 //! // TensorFrame is large (~65KB), so spawn a thread with adequate stack.
 //! std::thread::Builder::new().stack_size(4 * 1024 * 1024).spawn(|| {
-//!     let mut router = IntentRouter::new();
+//!     let pipeline = volt_hard::default_pipeline();
+//!
 //!     let engine = MathEngine::new();
 //!     let math_cap = *engine.capability_vector();
-//!     router.register(Box::new(engine));
 //!
 //!     let mut frame = TensorFrame::new();
 //!     let mut pred = SlotData::new(SlotRole::Predicate);
@@ -50,24 +61,36 @@
 //!     frame.write_slot(6, inst).unwrap();
 //!     frame.meta[6].certainty = 0.9;
 //!
-//!     let result = router.route(&frame).unwrap();
+//!     let result = pipeline.process(&frame).unwrap();
 //!     let r = result.frame.read_slot(8).unwrap();
 //!     assert!((r.resolutions[0].unwrap()[0] - 42.0).abs() < 0.01);
+//!     assert!(result.proof.len() >= 2);
 //! }).unwrap().join().unwrap();
 //! ```
 
 pub use volt_core;
 
+pub mod certainty_engine;
+#[cfg(feature = "sandbox")]
+pub mod code_runner;
+pub mod hdc_algebra;
 pub mod math_engine;
+pub mod pipeline;
+pub mod proof_constructor;
 pub mod router;
 pub mod strand;
 
 use volt_core::{TensorFrame, VoltError};
 
-/// Phase 1 stub: passes frame through unchanged.
+/// Process a frame through the full Hard Core pipeline.
 ///
-/// In later phases, this will route slots to Hard Strands and
-/// compute per-slot certainty via the Certainty Engine.
+/// Routes to the best-matching strand, propagates certainty via
+/// the min-rule, and builds a proof chain. This replaces the old
+/// `verify_stub()` passthrough.
+///
+/// Internally spawns a thread with adequate stack (4 MB) because
+/// the pipeline + TensorFrame copies require more stack than the
+/// default thread size on some platforms.
 ///
 /// # Example
 ///
@@ -75,21 +98,37 @@ use volt_core::{TensorFrame, VoltError};
 /// use volt_core::{TensorFrame, SlotData, SlotRole, SLOT_DIM};
 /// use volt_hard::verify_stub;
 ///
-/// let mut frame = TensorFrame::new();
-/// frame.write_at(0, 0, SlotRole::Agent, [1.0; SLOT_DIM]).unwrap();
+/// // TensorFrame is ~65KB; use a bigger stack for the doctest.
+/// std::thread::Builder::new().stack_size(4 * 1024 * 1024).spawn(|| {
+///     let mut frame = TensorFrame::new();
+///     frame.write_at(0, 0, SlotRole::Agent, [1.0; SLOT_DIM]).unwrap();
 ///
-/// let result = verify_stub(&frame).unwrap();
-/// assert_eq!(result.active_slot_count(), 1);
+///     let result = verify_stub(&frame).unwrap();
+///     assert_eq!(result.active_slot_count(), 1);
+/// }).unwrap().join().unwrap();
 /// ```
 pub fn verify_stub(frame: &TensorFrame) -> Result<TensorFrame, VoltError> {
-    // MILESTONE: 3.2 — Replace with Intent Router + Certainty Engine
-    Ok(frame.clone())
+    let frame = Box::new(frame.clone());
+    std::thread::Builder::new()
+        .stack_size(4 * 1024 * 1024)
+        .spawn(move || {
+            let pipeline = default_pipeline();
+            let result = pipeline.process(&frame)?;
+            Ok(result.frame)
+        })
+        .map_err(|e| VoltError::FrameError {
+            message: format!("failed to spawn pipeline thread: {e}"),
+        })?
+        .join()
+        .map_err(|_| VoltError::FrameError {
+            message: "pipeline thread panicked".to_string(),
+        })?
 }
 
-/// Create a default Hard Core pipeline with the MathEngine registered.
+/// Create a default Intent Router with all standard Hard Strands.
 ///
-/// Convenience function that returns an [`IntentRouter`] pre-configured
-/// with the standard set of Hard Strands for Milestone 3.1.
+/// Registers MathEngine, HDCAlgebra, and (if the `sandbox` feature is
+/// enabled) CodeRunner.
 ///
 /// # Example
 ///
@@ -97,19 +136,37 @@ pub fn verify_stub(frame: &TensorFrame) -> Result<TensorFrame, VoltError> {
 /// use volt_hard::default_router;
 ///
 /// let router = default_router();
-/// assert_eq!(router.strand_count(), 1);
+/// assert!(router.strand_count() >= 2);
 /// ```
 pub fn default_router() -> router::IntentRouter {
     let mut router = router::IntentRouter::new();
     router.register(Box::new(math_engine::MathEngine::new()));
+    router.register(Box::new(hdc_algebra::HDCAlgebra::new()));
+
+    #[cfg(feature = "sandbox")]
+    if let Ok(runner) = code_runner::CodeRunner::new() {
+        router.register(Box::new(runner));
+    }
+
     router
 }
 
-// MILESTONE: 3.2 — More Hard Strands
-// TODO: Implement CodeRunner Hard Strand (wasmtime sandbox)
-// TODO: Implement HDCAlgebra Hard Strand (bind/unbind as callable strand)
-// TODO: Implement CertaintyEngine (min-rule γ propagation across frame)
-// TODO: Implement ProofConstructor (full proof chain recording)
+/// Create a default Hard Core pipeline with all standard strands.
+///
+/// Returns a [`HardCorePipeline`](pipeline::HardCorePipeline) pre-configured
+/// with the standard router (MathEngine + HDCAlgebra + CodeRunner).
+///
+/// # Example
+///
+/// ```
+/// use volt_hard::default_pipeline;
+///
+/// let pipeline = default_pipeline();
+/// assert!(pipeline.strand_count() >= 2);
+/// ```
+pub fn default_pipeline() -> pipeline::HardCorePipeline {
+    pipeline::HardCorePipeline::new(default_router())
+}
 
 #[cfg(test)]
 mod tests {
@@ -117,7 +174,7 @@ mod tests {
     use volt_core::{SlotData, SlotRole, SLOT_DIM};
 
     #[test]
-    fn verify_stub_returns_clone_of_input() {
+    fn verify_stub_returns_frame() {
         let mut frame = TensorFrame::new();
         let mut slot = SlotData::new(SlotRole::Predicate);
         slot.write_resolution(0, [0.7; SLOT_DIM]);
@@ -127,12 +184,6 @@ mod tests {
         let result = verify_stub(&frame).unwrap();
 
         assert_eq!(result.active_slot_count(), frame.active_slot_count());
-        assert_eq!(result.meta[1].certainty, frame.meta[1].certainty);
-
-        let orig = frame.read_slot(1).unwrap();
-        let copy = result.read_slot(1).unwrap();
-        assert_eq!(orig.role, copy.role);
-        assert_eq!(orig.resolutions[0], copy.resolutions[0]);
     }
 
     #[test]
@@ -143,8 +194,23 @@ mod tests {
     }
 
     #[test]
-    fn default_router_has_math_engine() {
+    fn default_router_has_strands() {
         let router = default_router();
-        assert_eq!(router.strand_count(), 1);
+        // At least MathEngine + HDCAlgebra
+        assert!(
+            router.strand_count() >= 2,
+            "default_router should have >= 2 strands, got {}",
+            router.strand_count()
+        );
+    }
+
+    #[test]
+    fn default_pipeline_has_strands() {
+        let pipeline = default_pipeline();
+        assert!(
+            pipeline.strand_count() >= 2,
+            "default_pipeline should have >= 2 strands, got {}",
+            pipeline.strand_count()
+        );
     }
 }

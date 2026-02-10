@@ -197,3 +197,63 @@ Results go to the Result slot (S8) at R0 with gamma=1.0 (exact computation).
 space, breaks vector algebra), fixed strand dispatch table (rejected: not
 extensible), per-slot routing to different strands simultaneously
 (deferred: adds complexity, single best-match sufficient for Milestone 3.1).
+
+## ADR-018: CertaintyEngine & ProofConstructor as Pipeline Infrastructure (2026-02-10)
+
+**Decision:** CertaintyEngine and ProofConstructor are pipeline
+infrastructure, not HardStrands. They run unconditionally on every frame
+inside `HardCorePipeline`, rather than being routed to by the IntentRouter.
+**Reason:** CertaintyEngine computes min-rule gamma propagation across all
+active slots — it is not a capability that should be "activated" by cosine
+similarity. ProofConstructor records what other strands did — it observes
+rather than participates. Making them pipeline infrastructure (not traits)
+keeps the routing logic clean and ensures they always execute.
+**Architecture:** `HardCorePipeline` wraps `IntentRouter` +
+`CertaintyEngine` + `ProofConstructor`. Flow: route frame → record routing
+decisions in proof → propagate certainty → record certainty step in proof
+→ return `PipelineResult { frame, proof: ProofChain }`.
+**Alternatives considered:** Making them HardStrands with always-activate
+threshold of 0.0 (rejected: conceptual mismatch, they don't have
+capability vectors), running them outside the pipeline (rejected: forces
+callers to manually wire them up).
+
+## ADR-019: wasmtime for CodeRunner Sandbox (2026-02-10)
+
+**Decision:** Use `wasmtime` 29 for sandboxed code execution in the
+CodeRunner HardStrand, feature-gated behind `sandbox` (on by default).
+**Reason:** CodeRunner needs to execute untrusted code safely on the CPU.
+WASM provides a memory-safe, capability-based sandbox with no implicit
+access to filesystem, network, or system calls. wasmtime is the reference
+Cranelift-based WASM runtime, maintained by the Bytecode Alliance, with
+fuel-based execution limits to prevent infinite loops. WASM bytes are
+encoded in the Instrument slot (S6) across R1/R2/R3 resolutions as
+f32-cast bytes (up to 768 bytes).
+**Sandboxing guarantees:** No WASI imports (instantiation fails if module
+requests filesystem/network/clock), fuel-limited to 1M operations (returns
+`VoltError::HardError` on exhaustion), isolated linear memory (4MB max).
+**Feature gating:** Behind `sandbox` feature because wasmtime is a large
+dependency tree (~200 crates). The rest of volt-hard compiles without it.
+**Alternatives considered:** Lua VM (rejected: less sandboxable, no fuel
+limits), direct native execution (rejected: unsafe, no isolation), WASI
+with capability restrictions (rejected: still too much surface area,
+simpler to block all WASI imports entirely).
+
+## ADR-020: HDCAlgebra Slot Convention (2026-02-10)
+
+**Decision:** HDCAlgebra uses op codes 11-15 in the Instrument slot (S6)
+at R0 for bind/unbind/superpose/permute/similarity operations. Operand
+slot indices are encoded in dim[1] and dim[2], with dim[3] for permute
+offset k. Source vectors are read from the referenced slots at R0.
+**Reason:** HDCAlgebra exposes `volt_bus` HDC operations (bind, unbind,
+superpose, permute, similarity) as a callable Hard Strand. Using slot
+indices as operand references (rather than embedding operand vectors in
+S6) allows operating on any frame slot, supporting compositional reasoning
+chains where one operation's output feeds another's input.
+**Op codes:** 11.0=bind, 12.0=unbind, 13.0=superpose, 14.0=permute,
+15.0=similarity. These are disjoint from MathEngine codes (1-8) and
+CodeRunner (10).
+**Capability vector:** Deterministic from seed `0x4844_4341_4C47_4231`
+("HDCALGB1"), threshold 0.3 — same pattern as MathEngine.
+**Alternatives considered:** Inline operand vectors in S6 R1/R2 (rejected:
+limits to two fixed operands, can't reference arbitrary slots), separate
+HDC-specific frame format (rejected: breaks TensorFrame universality).

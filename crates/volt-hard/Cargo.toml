@@ -3,10 +3,16 @@ name = "volt-hard"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["sandbox"]
+sandbox = ["dep:wasmtime"]
+
 [dependencies]
 volt-core.workspace = true
 volt-bus.workspace = true
 thiserror.workspace = true
+wasmtime = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
+wasmtime.workspace = true

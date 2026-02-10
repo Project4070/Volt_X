@@ -65,28 +65,43 @@ pub async fn think(
     })?;
     let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
 
-    // Soft Core: stub pass-through (Phase 1 — copies input to output)
-    let processed_frame = process_stub(&output.frame).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("soft core processing failed: {e}"),
-            }),
-        )
-    })?;
-
-    // Hard Core: stub verification (Phase 1 — passes through unchanged)
-    let verified_frame = verify_stub(&processed_frame).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("hard core verification failed: {e}"),
-            }),
-        )
-    })?;
-
-    // Bus: frame similarity check (demonstrates bus algebra is functional)
-    let _bus_similarity = similarity_frames(&output.frame, &verified_frame);
+    // Run CPU-heavy pipeline on a thread with adequate stack.
+    // TensorFrame is ~65KB and the pipeline creates multiple copies,
+    // which can overflow the default async executor thread stack.
+    let pipeline_frame = output.frame.clone();
+    let verified_frame = std::thread::Builder::new()
+        .stack_size(4 * 1024 * 1024)
+        .spawn(move || -> Result<volt_core::TensorFrame, String> {
+            let processed = process_stub(&pipeline_frame)
+                .map_err(|e| format!("soft core processing failed: {e}"))?;
+            let verified = verify_stub(&processed)
+                .map_err(|e| format!("hard core verification failed: {e}"))?;
+            let _bus_similarity = similarity_frames(&pipeline_frame, &verified);
+            Ok(verified)
+        })
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("failed to spawn pipeline thread: {e}"),
+                }),
+            )
+        })?
+        .join()
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "pipeline thread panicked".to_string(),
+                }),
+            )
+        })?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: e }),
+            )
+        })?;
 
     // Extract gamma values from active slots
     let gamma: Vec<f32> = (0..MAX_SLOTS)
