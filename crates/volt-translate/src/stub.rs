@@ -103,6 +103,20 @@ impl StubTranslator {
     }
 }
 
+impl Clone for StubTranslator {
+    fn clone(&self) -> Self {
+        // Clone the vocabulary; if the lock is poisoned, start with empty vocab
+        let vocab = self
+            .vocab
+            .read()
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        Self {
+            vocab: RwLock::new(vocab),
+        }
+    }
+}
+
 impl Default for StubTranslator {
     fn default() -> Self {
         Self::new()

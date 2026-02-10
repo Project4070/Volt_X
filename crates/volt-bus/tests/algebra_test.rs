@@ -8,7 +8,7 @@
 
 use volt_bus::{bind, unbind, superpose, permute, similarity};
 use volt_bus::{bind_frames, unbind_frames, similarity_frames};
-use volt_core::{TensorFrame, SlotData, SlotRole, SLOT_DIM};
+use volt_core::{TensorFrame, SlotRole, SLOT_DIM};
 
 /// Create a normalized test vector from seed (deterministic pseudo-random using hash)
 fn normalized_test_vec(seed: u8) -> [f32; SLOT_DIM] {

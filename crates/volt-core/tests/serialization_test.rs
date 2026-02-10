@@ -1,28 +1,26 @@
 //! Integration tests for TensorFrame serialization.
 //!
-//! Note: serde tests are disabled due to stack overflow with large nested arrays.
+//! Note: serde tests use Box to avoid stack overflow with large nested arrays.
 //! rkyv is the recommended zero-copy serialization format for TensorFrames.
 
 use volt_core::{SlotData, SlotRole, TensorFrame, SLOT_DIM};
 
-// NOTE: serde causes stack overflow with TensorFrame's nested large arrays.
-// This is a known limitation. Use rkyv for zero-copy serialization instead.
 #[test]
-#[cfg(all(feature = "serde", not(feature = "rkyv")))]
-#[ignore]
+#[cfg(feature = "serde")]
 fn serde_roundtrip_is_bit_identical() {
-    let mut frame = TensorFrame::new();
+    // Use Box to avoid stack overflow — TensorFrame is ~64KB
+    let mut frame = Box::new(TensorFrame::new());
     let mut slot = SlotData::new(SlotRole::Agent);
     slot.write_resolution(0, [0.42; SLOT_DIM]);
     frame.write_slot(0, slot).unwrap();
     frame.meta[0].certainty = 0.95;
 
-    let serialized = serde_json::to_vec(&frame).unwrap();
-    let deserialized: TensorFrame = serde_json::from_slice(&serialized).unwrap();
+    let serialized = serde_json::to_vec(&*frame).unwrap();
+    let deserialized: Box<TensorFrame> = serde_json::from_slice(&serialized).unwrap();
 
     // Verify data integrity
     assert_eq!(frame.active_slot_count(), deserialized.active_slot_count());
-    assert_eq!(frame.meta[0].certainty, deserialized.meta[0].certainty());
+    assert_eq!(frame.meta[0].certainty, deserialized.meta[0].certainty);
 
     let orig_slot = frame.read_slot(0).unwrap();
     let deser_slot = deserialized.read_slot(0).unwrap();
@@ -61,9 +59,6 @@ fn full_frame_size_is_64kb() {
 
     assert_eq!(frame.data_size_bytes(), 65536); // 16 × 4 × 256 × 4 = 64KB
 }
-
-// NOTE: Additional serde tests disabled due to stack overflow with large arrays.
-// Serde support is experimental. Use rkyv for production serialization.
 
 #[test]
 #[cfg(feature = "rkyv")]

@@ -478,12 +478,10 @@ impl TensorFrame {
         for slot_idx in 0..MAX_SLOTS {
             if self.slots[slot_idx].is_some() {
                 for res_idx in 0..NUM_RESOLUTIONS {
-                    if self.slots[slot_idx]
+                    let has_resolution = self.slots[slot_idx]
                         .as_ref()
-                        .unwrap()
-                        .resolutions[res_idx]
-                        .is_some()
-                    {
+                        .is_some_and(|slot| slot.resolutions[res_idx].is_some());
+                    if has_resolution {
                         self.normalize_slot(slot_idx, res_idx)?;
                     }
                 }

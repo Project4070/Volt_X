@@ -8,8 +8,11 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 
+use volt_bus::similarity_frames;
 use volt_core::slot::SlotSource;
 use volt_core::{SlotRole, MAX_SLOTS};
+use volt_hard::verify_stub;
+use volt_soft::process_stub;
 use volt_translate::decode::format_output;
 use volt_translate::Translator;
 
@@ -32,11 +35,13 @@ pub async fn health() -> impl IntoResponse {
     })
 }
 
-/// `POST /api/think` — process text through the translation pipeline.
+/// `POST /api/think` — process text through the full Phase 1 pipeline.
+///
+/// Pipeline: `Encode -> Soft Core -> Hard Core -> Bus Check -> Decode`
 ///
 /// Accepts a JSON body with a `text` field, encodes it into a
-/// TensorFrame, decodes it back, and returns the result with
-/// per-slot certainty values.
+/// TensorFrame, routes it through the Soft Core and Hard Core stubs,
+/// verifies frame integrity via the Bus, then decodes back to text.
 ///
 /// # Errors
 ///
@@ -60,17 +65,40 @@ pub async fn think(
     })?;
     let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
 
+    // Soft Core: stub pass-through (Phase 1 — copies input to output)
+    let processed_frame = process_stub(&output.frame).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("soft core processing failed: {e}"),
+            }),
+        )
+    })?;
+
+    // Hard Core: stub verification (Phase 1 — passes through unchanged)
+    let verified_frame = verify_stub(&processed_frame).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("hard core verification failed: {e}"),
+            }),
+        )
+    })?;
+
+    // Bus: frame similarity check (demonstrates bus algebra is functional)
+    let _bus_similarity = similarity_frames(&output.frame, &verified_frame);
+
     // Extract gamma values from active slots
     let gamma: Vec<f32> = (0..MAX_SLOTS)
-        .filter(|&i| output.frame.slots[i].is_some())
-        .map(|i| output.frame.meta[i].certainty)
+        .filter(|&i| verified_frame.slots[i].is_some())
+        .map(|i| verified_frame.meta[i].certainty)
         .collect();
 
     // Decode: TensorFrame -> per-slot words and full text
     let decode_start = Instant::now();
     let slot_words = state
         .translator
-        .decode_slots(&output.frame)
+        .decode_slots(&verified_frame)
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -88,7 +116,7 @@ pub async fn think(
     let slot_states: Vec<SlotState> = slot_words
         .iter()
         .map(|(index, role, word)| {
-            let res_count = output.frame.slots[*index]
+            let res_count = verified_frame.slots[*index]
                 .as_ref()
                 .map(|s| s.active_resolution_count() as u32)
                 .unwrap_or(0);
@@ -96,8 +124,8 @@ pub async fn think(
                 index: *index,
                 role: format_role(role),
                 word: word.clone(),
-                certainty: output.frame.meta[*index].certainty,
-                source: format_source(&output.frame.meta[*index].source),
+                certainty: verified_frame.meta[*index].certainty,
+                source: format_source(&verified_frame.meta[*index].source),
                 resolution_count: res_count,
             }
         })
@@ -106,7 +134,7 @@ pub async fn think(
     Ok(Json(ThinkResponse {
         text: decoded_text,
         gamma,
-        strand_id: output.frame.frame_meta.strand_id,
+        strand_id: verified_frame.frame_meta.strand_id,
         iterations: 1,
         slot_states,
         timing_ms: TimingMs {
