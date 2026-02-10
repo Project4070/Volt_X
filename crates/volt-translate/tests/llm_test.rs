@@ -23,7 +23,7 @@ use volt_translate::llm::roles::{
     parse_propbank_label, propbank_to_slot, role_to_class_index, slot_to_propbank, slot_to_role,
     PropBankRole, NUM_ROLE_CLASSES,
 };
-use volt_translate::llm::translator::LlmTranslator;
+use volt_translate::llm::translator::{LlmTranslator, LlmTranslatorConfig};
 use volt_translate::Translator;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -439,18 +439,168 @@ fn tier2_mock_backbone_deterministic() {
 // TIER 3: Real model tests (require downloaded model)
 // ═══════════════════════════════════════════════════════════════════
 
+/// Helper: build an [`LlmTranslatorConfig`] from environment variables.
+///
+/// Required env vars:
+/// - `VOLT_MODEL_DIR` — path to the Qwen3-0.6B directory
+/// - `VOLT_PROJECTION_WEIGHTS` — path to projection.safetensors
+/// - `VOLT_CODEBOOK_PATH` — path to codebook.bin
+fn tier3_config() -> LlmTranslatorConfig {
+    let model_dir = std::env::var("VOLT_MODEL_DIR")
+        .expect("set VOLT_MODEL_DIR to the Qwen3-0.6B directory");
+    let projection_weights = std::env::var("VOLT_PROJECTION_WEIGHTS")
+        .expect("set VOLT_PROJECTION_WEIGHTS to the projection.safetensors file");
+    let codebook_path = std::env::var("VOLT_CODEBOOK_PATH")
+        .expect("set VOLT_CODEBOOK_PATH to the codebook.bin file");
+
+    LlmTranslatorConfig {
+        model_dir: model_dir.into(),
+        projection_weights: projection_weights.into(),
+        codebook_path: codebook_path.into(),
+        ..Default::default()
+    }
+}
+
 #[test]
 #[ignore = "requires downloaded Qwen3-0.6B model + trained projection weights"]
 fn tier3_real_model_agent_predicate_location() {
-    // "The cat sat on the mat" should yield:
-    //   S0 = Agent ("cat"), S1 = Predicate ("sat"), S3 = Location ("mat")
-    // This test only passes after training.
-    todo!("Milestone 2.2: real model acceptance test (post-training)")
+    use volt_core::SlotRole;
+
+    let config = tier3_config();
+    let device = Device::Cpu;
+    let translator =
+        LlmTranslator::new(&config, &device).expect("failed to load LLM translator");
+
+    let output = translator
+        .encode("The cat sat on the mat")
+        .expect("failed to encode");
+
+    let slots = translator
+        .decode_slots(&output.frame)
+        .expect("failed to decode slots");
+
+    // Build a lookup: slot_index -> role
+    let role_map: std::collections::HashMap<usize, SlotRole> =
+        slots.iter().map(|(idx, role, _)| (*idx, *role)).collect();
+
+    // S0 = Agent ("cat")
+    assert_eq!(
+        role_map.get(&0),
+        Some(&SlotRole::Agent),
+        "slot 0 should be Agent, got {:?}",
+        role_map.get(&0),
+    );
+
+    // S1 = Predicate ("sat")
+    assert_eq!(
+        role_map.get(&1),
+        Some(&SlotRole::Predicate),
+        "slot 1 should be Predicate, got {:?}",
+        role_map.get(&1),
+    );
+
+    // S3 = Location ("mat")
+    assert_eq!(
+        role_map.get(&3),
+        Some(&SlotRole::Location),
+        "slot 3 should be Location, got {:?}",
+        role_map.get(&3),
+    );
+
+    assert!(
+        output.slots_filled >= 3,
+        "expected at least 3 slots, got {}",
+        output.slots_filled,
+    );
 }
 
 #[test]
 #[ignore = "requires downloaded Qwen3-0.6B model + trained projection weights"]
 fn tier3_real_model_accuracy_above_80() {
-    // Test role assignment accuracy on PropBank test set
-    todo!("Milestone 2.2: PropBank test set accuracy (post-training)")
+    use volt_core::SlotRole;
+
+    let config = tier3_config();
+    let device = Device::Cpu;
+    let translator =
+        LlmTranslator::new(&config, &device).expect("failed to load LLM translator");
+
+    // Test sentences with known dominant semantic roles.
+    // Each entry: (sentence, expected [(slot_idx, SlotRole)])
+    let test_cases: &[(&str, &[(usize, SlotRole)])] = &[
+        (
+            "The cat sat on the mat",
+            &[
+                (0, SlotRole::Agent),
+                (1, SlotRole::Predicate),
+                (3, SlotRole::Location),
+            ],
+        ),
+        (
+            "She quickly wrote a letter",
+            &[
+                (0, SlotRole::Agent),
+                (1, SlotRole::Predicate),
+                (2, SlotRole::Patient),
+            ],
+        ),
+        (
+            "The engineer built a bridge in the city",
+            &[
+                (0, SlotRole::Agent),
+                (1, SlotRole::Predicate),
+                (2, SlotRole::Patient),
+                (3, SlotRole::Location),
+            ],
+        ),
+        (
+            "Yesterday the doctor examined the patient",
+            &[
+                (0, SlotRole::Agent),
+                (1, SlotRole::Predicate),
+                (2, SlotRole::Patient),
+                (4, SlotRole::Time),
+            ],
+        ),
+        (
+            "He repaired the engine with a wrench",
+            &[
+                (0, SlotRole::Agent),
+                (1, SlotRole::Predicate),
+                (2, SlotRole::Patient),
+                (6, SlotRole::Instrument),
+            ],
+        ),
+    ];
+
+    let mut total_checks = 0;
+    let mut correct = 0;
+
+    for (sentence, expected_roles) in test_cases {
+        let output = translator
+            .encode(sentence)
+            .unwrap_or_else(|e| panic!("failed to encode '{sentence}': {e}"));
+
+        let slots = translator
+            .decode_slots(&output.frame)
+            .unwrap_or_else(|e| panic!("failed to decode slots for '{sentence}': {e}"));
+
+        let role_map: std::collections::HashMap<usize, SlotRole> =
+            slots.iter().map(|(idx, role, _)| (*idx, *role)).collect();
+
+        for &(slot_idx, ref expected_role) in *expected_roles {
+            total_checks += 1;
+            if role_map.get(&slot_idx) == Some(expected_role) {
+                correct += 1;
+            }
+        }
+    }
+
+    let accuracy = correct as f64 / total_checks as f64;
+    assert!(
+        accuracy > 0.80,
+        "role accuracy {:.1}% ({}/{}) is below 80% threshold",
+        accuracy * 100.0,
+        correct,
+        total_checks,
+    );
 }

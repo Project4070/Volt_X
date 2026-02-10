@@ -20,3 +20,8 @@ gpu = ["dep:candle-core", "dep:candle-nn"]
 
 [dev-dependencies]
 proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "rar_benchmark"
+harness = false

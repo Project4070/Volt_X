@@ -11,6 +11,7 @@ Architecture:
     MLP: 1024 → 4096 (GELU) → 4096 (GELU) → 4096 (GELU)
     Role Head: 4096 → 16 (cross-entropy loss)
     Embed Head: 4096 → 256 (codebook commitment loss)
+    Reconstruction Decoder: 256 → 4096 (GELU) → hidden_dim (MSE reconstruction loss)
 
 Weight naming convention (matches Rust loader):
     proj.mlp.0.weight [4096, 1024]   proj.mlp.0.bias [4096]
@@ -106,6 +107,34 @@ class FrameProjectionHead(nn.Module):
         role_logits = self.role_head(x)
         token_embeds = self.embed_head(x)
         return role_logits, token_embeds
+
+
+class ReconstructionDecoder(nn.Module):
+    """Lightweight decoder: slot embeddings -> reconstructed hidden states.
+
+    Maps predicted 256-dim slot embeddings back to the original hidden_dim
+    space. Used for round-trip reconstruction loss (Milestone 2.2 spec).
+    This is a training-only component; weights are NOT exported for Rust inference.
+    """
+
+    def __init__(self, slot_dim=SLOT_DIM, intermediate_dim=MLP_DIM,
+                 hidden_dim=HIDDEN_DIM):
+        super().__init__()
+        self.decoder = nn.Sequential(
+            nn.Linear(slot_dim, intermediate_dim),
+            nn.GELU(),
+            nn.Linear(intermediate_dim, hidden_dim),
+        )
+
+    def forward(self, token_embeds):
+        """
+        Args:
+            token_embeds: [batch, seq_len, slot_dim]
+
+        Returns:
+            reconstructed: [batch, seq_len, hidden_dim]
+        """
+        return self.decoder(token_embeds)
 
 
 # ─── Dataset ────────────────────────────────────────────────────────
@@ -507,14 +536,30 @@ def train(args):
         slot_dim=SLOT_DIM,
     ).to(device)
 
+    # Reconstruction decoder (training-only, not exported to Rust)
+    decoder = ReconstructionDecoder(
+        slot_dim=SLOT_DIM,
+        intermediate_dim=MLP_DIM,
+        hidden_dim=actual_hidden_dim,
+    ).to(device)
+
     if args.resume and Path(args.resume).exists():
         print(f"Resuming from {args.resume}...")
         checkpoint = torch.load(args.resume, weights_only=True)
         head.load_state_dict(checkpoint["model_state_dict"])
+        if "decoder_state_dict" in checkpoint:
+            decoder.load_state_dict(checkpoint["decoder_state_dict"])
 
-    # Optimizer
+    # Codebook for utilization tracking (optional)
+    codebook = None
+    if getattr(args, "codebook", None):
+        codebook = load_codebook(args.codebook)
+        print(f"Loaded codebook: {codebook.shape[0]} entries, dim={codebook.shape[1]}")
+
+    # Optimizer (includes both head and decoder parameters)
+    all_params = list(head.parameters()) + list(decoder.parameters())
     optimizer = torch.optim.AdamW(
-        head.parameters(),
+        all_params,
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
@@ -527,7 +572,9 @@ def train(args):
     total_steps = num_epochs * num_batches
     best_loss = float("inf")
 
-    total_params = sum(p.numel() for p in head.parameters())
+    head_params = sum(p.numel() for p in head.parameters())
+    decoder_params = sum(p.numel() for p in decoder.parameters())
+    total_params = head_params + decoder_params
     print(f"\n{'='*60}")
     print(f"  Training Configuration")
     print(f"{'='*60}")
@@ -541,6 +588,9 @@ def train(args):
     print(f"  MLP:              {actual_hidden_dim} -> {MLP_DIM} -> {MLP_DIM} -> {MLP_DIM}")
     print(f"  Role Head:        {MLP_DIM} -> {NUM_ROLES}")
     print(f"  Embed Head:       {MLP_DIM} -> {SLOT_DIM}")
+    print(f"  Recon Decoder:    {SLOT_DIM} -> {MLP_DIM} -> {actual_hidden_dim}")
+    print(f"  Head parameters:  {head_params:,}")
+    print(f"  Decoder params:   {decoder_params:,}")
     print(f"  Total parameters: {total_params:,}")
     print(f"{'='*60}\n")
 
@@ -550,8 +600,10 @@ def train(args):
 
     for epoch in range(num_epochs):
         head.train()
+        decoder.train()
         epoch_loss = 0.0
         epoch_role_loss = 0.0
+        epoch_recon_loss = 0.0
         epoch_correct = 0
         epoch_total = 0
         epoch_start = time.time()
@@ -587,14 +639,21 @@ def train(args):
             embed_norms = embeds_flat.norm(dim=-1)
             commitment_loss = ((embed_norms - 1.0) ** 2).mean()
 
-            loss = role_loss + 0.1 * commitment_loss
+            # Reconstruction loss: decode embeddings back to hidden-state space
+            reconstructed = decoder(token_embeds)  # [batch, seq_len, hidden_dim]
+            recon_flat = reconstructed[batch_mask]  # [num_valid_tokens, hidden_dim]
+            hidden_flat = batch_hidden[batch_mask]  # [num_valid_tokens, hidden_dim]
+            reconstruction_loss = F.mse_loss(recon_flat, hidden_flat)
+
+            loss = role_loss + 0.1 * commitment_loss + 0.1 * reconstruction_loss
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(head.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(all_params, 1.0)
             optimizer.step()
 
             epoch_loss += loss.item()
             epoch_role_loss += role_loss.item()
+            epoch_recon_loss += reconstruction_loss.item()
             global_step += 1
 
             # Accuracy
@@ -607,8 +666,10 @@ def train(args):
             # Update progress bar with live metrics
             running_loss = epoch_loss / (pbar.n + 1)
             running_acc = epoch_correct / max(epoch_total, 1)
+            running_recon = epoch_recon_loss / (pbar.n + 1)
             pbar.set_postfix(
                 loss=f"{running_loss:.4f}",
+                recon=f"{running_recon:.4f}",
                 acc=f"{running_acc:.1%}",
                 step=f"{global_step}/{total_steps}",
             )
@@ -619,6 +680,7 @@ def train(args):
         epoch_times.append(epoch_elapsed)
         avg_loss = epoch_loss / num_batches
         avg_role_loss = epoch_role_loss / num_batches
+        avg_recon_loss = epoch_recon_loss / num_batches
         accuracy = epoch_correct / max(epoch_total, 1)
 
         # Time estimation
@@ -637,6 +699,7 @@ def train(args):
 
         print(
             f"  -> loss={avg_loss:.4f}  role_loss={avg_role_loss:.4f}  "
+            f"recon_loss={avg_recon_loss:.4f}  "
             f"acc={accuracy:.1%}  "
             f"epoch={_fmt_time(epoch_elapsed)}  "
             f"elapsed={_fmt_time(total_elapsed)}  "
@@ -651,10 +714,14 @@ def train(args):
             )
 
         # Save best checkpoint
+        # Run evaluation at end of epoch
+        evaluate(head, dataloader, device, codebook=codebook)
+
         if avg_loss < best_loss:
             best_loss = avg_loss
             torch.save({
                 "model_state_dict": head.state_dict(),
+                "decoder_state_dict": decoder.state_dict(),
                 "epoch": epoch,
                 "loss": avg_loss,
                 "accuracy": accuracy,
@@ -665,6 +732,12 @@ def train(args):
 
     # Export as safetensors
     export_safetensors(head, args.output)
+
+    # BLEU evaluation (optional)
+    if getattr(args, "evaluate_bleu", False):
+        print("\nRunning BLEU-4 evaluation...")
+        bleu = evaluate_bleu(head, decoder, dataloader, device)
+        print(f"  Approximate round-trip BLEU-4: {bleu:.4f}")
 
     # Print evaluation summary
     print(f"\n{'='*60}")
@@ -723,10 +796,82 @@ def export_safetensors(head, output_path):
         print(f"  {key}: {list(tensor.shape)}")
 
 
+# ─── Codebook ──────────────────────────────────────────────────────
+
+def load_codebook(path):
+    """Load Volt X codebook binary file.
+
+    Format: 4-byte magic 'VXCB' + u32 version + u32 entry_count + u32 dim
+            + entry_count * dim * 4 bytes of f32 LE data (row-major).
+
+    Returns:
+        torch.Tensor of shape [entry_count, dim].
+    """
+    import struct
+    import numpy as np
+
+    with open(path, "rb") as f:
+        magic = f.read(4)
+        if magic != b"VXCB":
+            raise ValueError(f"Invalid codebook magic: {magic!r}, expected b'VXCB'")
+
+        version = struct.unpack("<I", f.read(4))[0]
+        entry_count = struct.unpack("<I", f.read(4))[0]
+        dim = struct.unpack("<I", f.read(4))[0]
+
+        if dim != SLOT_DIM:
+            raise ValueError(f"Codebook dim {dim} != expected {SLOT_DIM}")
+
+        data = np.frombuffer(f.read(entry_count * dim * 4), dtype=np.float32)
+        data = data.reshape(entry_count, dim)
+
+    return torch.from_numpy(data.copy())
+
+
+def compute_codebook_utilization(head, codebook, dataloader, device):
+    """Compute codebook utilization: fraction of unique entries used.
+
+    Quantizes all predicted embeddings via nearest-neighbor cosine lookup
+    against the codebook. Reports unique_ids / total_entries.
+
+    Args:
+        head: Trained FrameProjectionHead.
+        codebook: [entry_count, dim] tensor of codebook vectors.
+        dataloader: Validation data.
+        device: Torch device.
+
+    Returns:
+        Utilization ratio in [0.0, 1.0].
+    """
+    head.eval()
+    codebook_gpu = codebook.to(device)
+    codebook_norm = F.normalize(codebook_gpu, dim=-1)
+    used_ids = set()
+
+    with torch.no_grad():
+        for batch_hidden, batch_labels, batch_mask in dataloader:
+            batch_hidden = batch_hidden.to(device)
+            batch_mask = batch_mask.to(device)
+
+            _, token_embeds = head(batch_hidden)
+            embeds_flat = token_embeds[batch_mask]  # [N, slot_dim]
+            if embeds_flat.numel() == 0:
+                continue
+            embeds_norm = F.normalize(embeds_flat, dim=-1)
+
+            # Cosine similarity: [N, entry_count]
+            sims = embeds_norm @ codebook_norm.T
+            nearest_ids = sims.argmax(dim=-1)  # [N]
+            used_ids.update(nearest_ids.cpu().tolist())
+
+    total_entries = codebook.size(0)
+    return len(used_ids) / total_entries
+
+
 # ─── Evaluate ───────────────────────────────────────────────────────
 
-def evaluate(head, dataloader, device):
-    """Evaluate role classification accuracy per role."""
+def evaluate(head, dataloader, device, codebook=None):
+    """Evaluate role classification accuracy per role, plus codebook utilization."""
     head.eval()
     per_role_correct = torch.zeros(NUM_ROLES, dtype=torch.long)
     per_role_total = torch.zeros(NUM_ROLES, dtype=torch.long)
@@ -764,7 +909,156 @@ def evaluate(head, dataloader, device):
     overall_acc = total_correct / max(total_total, 1)
     print(f"  {'Overall':12s}: {total_correct:5d}/{total_total:5d} = {overall_acc:.3f}")
 
+    # Codebook utilization (if codebook provided)
+    if codebook is not None:
+        utilization = compute_codebook_utilization(head, codebook, dataloader, device)
+        used = int(utilization * codebook.size(0))
+        total = codebook.size(0)
+        print(f"\n  Codebook utilization: {utilization:.1%} ({used}/{total} entries used)")
+        return overall_acc, utilization
+
     return overall_acc
+
+
+# ─── BLEU ──────────────────────────────────────────────────────────
+
+def compute_bleu4(references, hypotheses):
+    """Compute corpus-level BLEU-4 score.
+
+    Self-contained implementation (no external dependencies).
+
+    Args:
+        references: List of reference token lists (list[list[str]]).
+        hypotheses: List of hypothesis token lists (list[list[str]]).
+
+    Returns:
+        BLEU-4 score in [0.0, 1.0].
+    """
+    from collections import Counter
+    import math
+
+    if not references or not hypotheses:
+        return 0.0
+
+    clipped_counts = [0] * 4
+    total_counts = [0] * 4
+    ref_len = 0
+    hyp_len = 0
+
+    for ref, hyp in zip(references, hypotheses):
+        ref_len += len(ref)
+        hyp_len += len(hyp)
+
+        for n in range(1, 5):
+            ref_ngrams = Counter(
+                tuple(ref[i:i + n]) for i in range(len(ref) - n + 1)
+            )
+            hyp_ngrams = Counter(
+                tuple(hyp[i:i + n]) for i in range(len(hyp) - n + 1)
+            )
+            for ngram, count in hyp_ngrams.items():
+                clipped_counts[n - 1] += min(count, ref_ngrams.get(ngram, 0))
+            total_counts[n - 1] += sum(hyp_ngrams.values())
+
+    # Modified precisions
+    precisions = []
+    for n in range(4):
+        if total_counts[n] == 0:
+            return 0.0
+        precisions.append(clipped_counts[n] / total_counts[n])
+
+    # Geometric mean of log precisions
+    log_avg = sum(
+        math.log(p) if p > 0 else float("-inf") for p in precisions
+    ) / 4.0
+    if log_avg == float("-inf"):
+        return 0.0
+
+    # Brevity penalty
+    if hyp_len == 0:
+        return 0.0
+    bp = math.exp(1 - ref_len / hyp_len) if hyp_len < ref_len else 1.0
+
+    return bp * math.exp(log_avg)
+
+
+def evaluate_bleu(head, decoder, dataloader, device, max_samples=500):
+    """Evaluate approximate round-trip BLEU-4 score.
+
+    Pipeline: hidden_states -> head -> token_embeds -> decoder ->
+    reconstructed hidden_states -> cosine-nearest original token.
+
+    Since we don't have access to the LLM embedding matrix at training
+    time, we approximate by comparing the reconstructed hidden states
+    token-by-token to the original hidden states. Each "token" is
+    represented by its nearest neighbor in the input batch.
+
+    For true BLEU this would require a full text decoder; this
+    approximation measures reconstruction fidelity at the hidden-state
+    level and converts it to a token-matching score.
+
+    Args:
+        head: Trained FrameProjectionHead.
+        decoder: Trained ReconstructionDecoder.
+        dataloader: Validation data.
+        device: Torch device.
+        max_samples: Maximum number of sentences to evaluate.
+
+    Returns:
+        Approximate BLEU-4 score.
+    """
+    head.eval()
+    decoder.eval()
+
+    references = []
+    hypotheses = []
+    samples_seen = 0
+
+    with torch.no_grad():
+        for batch_hidden, batch_labels, batch_mask in dataloader:
+            if samples_seen >= max_samples:
+                break
+
+            batch_hidden = batch_hidden.to(device)
+            batch_mask = batch_mask.to(device)
+
+            _, token_embeds = head(batch_hidden)
+            reconstructed = decoder(token_embeds)  # [batch, seq_len, hidden_dim]
+
+            batch_size = batch_hidden.size(0)
+            for i in range(batch_size):
+                if samples_seen >= max_samples:
+                    break
+
+                mask_i = batch_mask[i]  # [seq_len]
+                if mask_i.sum() == 0:
+                    continue
+
+                orig = batch_hidden[i][mask_i]  # [valid_len, hidden_dim]
+                recon = reconstructed[i][mask_i]  # [valid_len, hidden_dim]
+
+                # Normalize for cosine comparison
+                orig_norm = F.normalize(orig, dim=-1)
+                recon_norm = F.normalize(recon, dim=-1)
+
+                # For each reconstructed token, find its nearest original token
+                sims = recon_norm @ orig_norm.T  # [valid_len, valid_len]
+                nearest = sims.argmax(dim=-1)  # [valid_len]
+
+                # Reference: original token positions 0, 1, 2, ...
+                ref_tokens = [str(j) for j in range(orig.size(0))]
+                # Hypothesis: the nearest-original-token indices
+                hyp_tokens = [str(idx.item()) for idx in nearest]
+
+                references.append(ref_tokens)
+                hypotheses.append(hyp_tokens)
+                samples_seen += 1
+
+    if not references:
+        return 0.0
+
+    bleu = compute_bleu4(references, hypotheses)
+    return bleu
 
 
 # ─── CLI ────────────────────────────────────────────────────────────
@@ -825,6 +1119,17 @@ def main():
         "--quick",
         action="store_true",
         help="Quick test run: tiny dataset, 2 epochs",
+    )
+    parser.add_argument(
+        "--codebook",
+        type=str,
+        default=None,
+        help="Path to codebook.bin for utilization tracking during evaluation",
+    )
+    parser.add_argument(
+        "--evaluate-bleu",
+        action="store_true",
+        help="Run BLEU-4 evaluation after training (approximate round-trip)",
     )
 
     args = parser.parse_args()
