@@ -174,3 +174,26 @@ volt-translate, following the `gpu` feature pattern in volt-soft.
 larger at 2.2GB f16), Phi-2 (rejected: 2.7B params, overkill for
 semantic role labeling), llama.cpp bindings (rejected: C++ build
 dependency), full Python inference server (rejected: adds network code).
+
+## ADR-017: HardStrand Trait + Intent Router Design (2026-02-10)
+
+**Decision:** Hard Strands are pluggable via a `HardStrand` trait with
+three key methods: `capability_vector()` returning a 256-dim unit vector,
+`threshold()` for activation similarity floor, and `process(frame)` for
+execution. The Intent Router computes cosine similarity (via
+`volt_bus::similarity`) between each registered strand's capability vector
+and all active frame slots at R0 (discourse resolution), routing to the
+best match above threshold.
+**Reason:** Capability vectors live in the same HDC space as frame slot
+embeddings, making routing a single cosine similarity comparison — O(S×K)
+where S=active slots and K=registered strands. The threshold per strand
+allows conservative strands (e.g., safety-critical) to require higher
+confidence before activating. The trait is `Send + Sync` enabling future
+parallel strand evaluation.
+**Slot Protocol:** Math operations use a structured encoding in the
+Instrument slot (S6) at R0: dim[0]=op_code, dim[1]=left, dim[2]=right.
+Results go to the Result slot (S8) at R0 with gamma=1.0 (exact computation).
+**Alternatives considered:** String-based routing (rejected: not in HDC
+space, breaks vector algebra), fixed strand dispatch table (rejected: not
+extensible), per-slot routing to different strands simultaneously
+(deferred: adds complexity, single best-match sufficient for Milestone 3.1).

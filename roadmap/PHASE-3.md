@@ -7,20 +7,22 @@ Add deterministic CPU tools and verification. The system should now be able to d
 
 ---
 
-## Milestone 3.1: Intent Router + First Hard Strand (Week 19-20)
+## Milestone 3.1: Intent Router + First Hard Strand (Week 19-20) -- DONE
 
 **Crate:** `volt-hard`
 
 ### What You Build
-- Intent Router: receives TensorFrame from Soft Core, computes cosine similarity against registered Hard Strand capability vectors, routes to best match
-- MathEngine Hard Strand: implements `HardStrand` trait, handles arithmetic, algebra, basic calculus
-- Integration: Soft Core -> Intent Router -> MathEngine -> result injected back into frame
+
+- [x] Intent Router: receives TensorFrame from Soft Core, computes cosine similarity against registered Hard Strand capability vectors, routes to best match
+- [x] MathEngine Hard Strand: implements `HardStrand` trait, handles arithmetic, algebra, basic calculus
+- [x] Integration: Soft Core -> Intent Router -> MathEngine -> result injected back into frame
 
 ### What You Test
-- "What is 847 x 392?" -> MathEngine activates -> exact answer 331,824 -> gamma = 1.0
-- "Tell me about cats" -> no Hard Strand activates -> passes through Soft Core only
-- Router correctly distinguishes math queries from non-math queries (>95% accuracy on 100 test cases)
-- MathEngine returns in < 1ms
+
+- [x] "What is 847 x 392?" -> MathEngine activates -> exact answer 332,024 -> gamma = 1.0
+- [x] "Tell me about cats" -> no Hard Strand activates -> passes through Soft Core only
+- [x] Router correctly distinguishes math queries from non-math queries (>95% accuracy on 100 test cases)
+- [x] MathEngine returns in < 1ms
 
 **Duration:** 2 weeks.
 
