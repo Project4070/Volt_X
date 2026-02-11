@@ -47,6 +47,8 @@ pub struct ThinkRequest {
 ///         activated: true,
 ///     }],
 ///     safety_score: 0.0,
+///     memory_frame_count: 1,
+///     ghost_count: 0,
 ///     timing_ms: TimingMs { encode_ms: 0.1, decode_ms: 0.05, total_ms: 0.15 },
 /// };
 /// let json = serde_json::to_string(&resp).unwrap();
@@ -68,6 +70,10 @@ pub struct ThinkResponse {
     pub proof_steps: Vec<ProofStepResponse>,
     /// Pre-check safety score (0.0 = safe, higher = more violations).
     pub safety_score: f32,
+    /// Total frames stored in memory (T0 + T1).
+    pub memory_frame_count: usize,
+    /// Number of ghost gists that influenced this RAR pass.
+    pub ghost_count: usize,
     /// Timing breakdown in milliseconds.
     pub timing_ms: TimingMs,
 }

@@ -148,8 +148,13 @@ impl Translator for StubTranslator {
             let vector = word_to_vector(word);
             let role = Self::index_to_role(i);
 
-            // Write at R1 (proposition level)
-            frame.write_at(i, 1, role, vector)?;
+            // Write at both R0 (discourse) and R1 (proposition) so the
+            // frame is indexable by the HNSW gist extractor (which reads
+            // R0) AND decodable by decode_slots (which prefers R1).
+            frame.write_at(i, 0, role, vector)?;
+            if let Some(slot) = &mut frame.slots[i] {
+                slot.resolutions[1] = Some(vector);
+            }
 
             // Set slot metadata
             frame.meta[i].certainty = 0.8;

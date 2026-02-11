@@ -360,3 +360,191 @@ async fn concurrent_requests_do_not_crash() {
         result.expect("task should not panic");
     }
 }
+
+// --------------------------------------------------------------------------
+// Memory integration tests (Phase 4 wiring)
+// --------------------------------------------------------------------------
+
+/// Helper: send a think request and parse the response.
+async fn think_once(app: axum::Router, text: &str) -> ThinkResponse {
+    let body = format!(r#"{{"text": "{text}"}}"#);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/think")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn think_stores_frame_to_memory() {
+    let app = build_app();
+
+    let resp = think_once(app, "cat sat mat").await;
+
+    // After one request, exactly one frame should be stored
+    assert_eq!(
+        resp.memory_frame_count, 1,
+        "first request should store 1 frame"
+    );
+}
+
+#[tokio::test]
+async fn think_first_request_has_zero_ghosts() {
+    let app = build_app();
+
+    let resp = think_once(app, "hello world").await;
+
+    // First request has no history, so ghost count should be 0
+    assert_eq!(
+        resp.ghost_count, 0,
+        "first request should have 0 ghost gists"
+    );
+}
+
+#[tokio::test]
+async fn think_memory_accumulates_across_requests() {
+    let app = build_app();
+
+    // Send 3 sequential requests, each using a clone of the router
+    // (all share the same AppState and therefore the same memory).
+    let resp1 = think_once(app.clone(), "the cat sat").await;
+    let resp2 = think_once(app.clone(), "on the mat").await;
+    let resp3 = think_once(app, "in the hat").await;
+
+    assert_eq!(resp1.memory_frame_count, 1);
+    assert_eq!(resp2.memory_frame_count, 2);
+    assert_eq!(resp3.memory_frame_count, 3);
+}
+
+/// Verifies that frames produced by the full pipeline
+/// (encode → RAR → safety) have extractable R₀ gists and populate
+/// the ghost buffer when stored in VoltStore.
+#[tokio::test]
+async fn pipeline_frames_produce_valid_gists() {
+    use volt_db::{VoltStore, extract_gist};
+    use volt_translate::Translator;
+
+    // Run on a thread with adequate stack (TensorFrame is ~64KB,
+    // VoltStore operations stack-allocate multiple copies on Windows).
+    let result = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let translator = volt_translate::StubTranslator::new();
+
+            // Run full pipeline: encode → RAR → safety
+            let output = translator.encode("cat sat mat").unwrap();
+            let rar_result = volt_soft::process_rar(&output.frame).unwrap();
+            let safety_result = volt_safety::safe_process_full(&rar_result.frame).unwrap();
+
+            // Verified frame must have extractable R₀ gist
+            let gist = extract_gist(&safety_result.frame).unwrap();
+            assert!(
+                gist.is_some(),
+                "verified frame should have extractable R₀ gist; active_slots={}",
+                safety_result.frame.active_slot_count(),
+            );
+
+            // VoltStore indexes gists and populates ghost buffer
+            let mut store = VoltStore::new();
+            for i in 0..5 {
+                let out = translator.encode(&format!("word{i} sat mat")).unwrap();
+                let rar = volt_soft::process_rar(&out.frame).unwrap();
+                let safe = volt_safety::safe_process_full(&rar.frame).unwrap();
+                store.store(safe.frame).unwrap();
+            }
+
+            assert_eq!(store.hnsw_entries(), 5);
+            assert!(
+                !store.ghost_gists().is_empty(),
+                "after storing 5 pipeline frames, ghost buffer should be non-empty",
+            );
+        })
+        .expect("failed to spawn test thread")
+        .join();
+    result.expect("test thread panicked");
+}
+
+#[tokio::test]
+async fn think_ghost_buffer_populates_after_history() {
+    let app = build_app();
+
+    // Store several frames with varied text to build up HNSW history.
+    // Using different texts produces diverse R₀ gists, which gives the
+    // HNSW index a richer graph to search over.
+    let queries = [
+        "cat sat mat",
+        "dog ran park",
+        "bird flew sky",
+        "fish swam sea",
+        "cat sat mat",
+        "dog ran park",
+        "bird flew sky",
+        "fish swam sea",
+        "cat sat mat",
+        "dog ran park",
+    ];
+    for text in &queries {
+        think_once(app.clone(), text).await;
+    }
+
+    // The next request should see ghost gists from the accumulated history
+    let resp = think_once(app, "cat sat mat").await;
+    assert!(
+        resp.ghost_count > 0,
+        "after storing {} frames, ghost_count should be > 0, got {}",
+        queries.len(),
+        resp.ghost_count,
+    );
+}
+
+#[tokio::test]
+async fn think_concurrent_shared_memory() {
+    use tokio::task::JoinSet;
+
+    let app = build_app();
+    let mut tasks = JoinSet::new();
+
+    // 5 concurrent requests all sharing the same memory
+    for i in 0..5 {
+        let app_clone = app.clone();
+        tasks.spawn(async move {
+            let text = format!("concurrent request {i}");
+            let resp = think_once(app_clone, &text).await;
+            assert!(
+                resp.memory_frame_count >= 1,
+                "memory should contain at least 1 frame"
+            );
+        });
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        result.expect("concurrent memory task should not panic");
+    }
+}
+
+#[tokio::test]
+async fn think_response_includes_memory_fields() {
+    let app = build_app();
+
+    let resp = think_once(app, "hello world").await;
+
+    // Verify the new fields exist and have sane values
+    assert!(
+        resp.memory_frame_count >= 1,
+        "memory_frame_count should be >= 1 after a request"
+    );
+    // ghost_count is a usize, so always >= 0 — just verify it's present
+    // by accessing it (deserialization would have failed if missing)
+    let _ = resp.ghost_count;
+}

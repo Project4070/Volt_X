@@ -10,7 +10,7 @@ use axum::Json;
 
 use volt_bus::similarity_frames;
 use volt_core::slot::SlotSource;
-use volt_core::{SlotRole, VoltError, MAX_SLOTS};
+use volt_core::{SlotRole, VoltError, SLOT_DIM, MAX_SLOTS};
 use volt_translate::decode::format_output;
 use volt_translate::Translator;
 
@@ -47,6 +47,8 @@ struct PipelineOutput {
     proof_steps: Vec<ProofStepResponse>,
     /// Pre-check safety score.
     safety_score: f32,
+    /// Number of ghost gists that influenced RAR.
+    ghost_count: usize,
 }
 
 /// `POST /api/think` — process text through the full pipeline.
@@ -81,6 +83,15 @@ pub async fn think(
     })?;
     let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
 
+    // Fetch ghost gists from memory before entering the pipeline thread.
+    // Read lock is cheap — many concurrent readers allowed.
+    let ghost_gists: Vec<[f32; SLOT_DIM]> = state
+        .memory
+        .read()
+        .map(|guard| guard.ghost_gists())
+        .unwrap_or_default();
+    let ghost_count = ghost_gists.len();
+
     // Run the full CPU-heavy pipeline on a thread with adequate stack.
     // TensorFrame is ~65KB and the pipeline creates multiple copies,
     // so we need more than the default async executor thread stack.
@@ -88,8 +99,15 @@ pub async fn think(
     let pipeline_output = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || -> Result<PipelineOutput, (StatusCode, String)> {
-            // Soft Core: RAR inference loop
-            let rar_result = volt_soft::process_rar(&pipeline_frame).map_err(|e| {
+            // Soft Core: RAR inference loop with ghost frame cross-attention.
+            // Ghost gists from the Bleed Buffer provide subtle memory
+            // influence (alpha=0.1) during the Attend phase.
+            let rar_result = volt_soft::process_rar_with_ghosts(
+                &pipeline_frame,
+                &ghost_gists,
+                0.1,
+            )
+            .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("soft core RAR failed: {e}"),
@@ -135,6 +153,7 @@ pub async fn think(
                 iterations,
                 proof_steps,
                 safety_score: safety_result.pre_check_score,
+                ghost_count,
             })
         })
         .map_err(|e| {
@@ -157,6 +176,29 @@ pub async fn think(
         .map_err(|(status, msg)| (status, Json(ErrorResponse { error: msg })))?;
 
     let verified_frame = pipeline_output.frame;
+
+    // Store verified frame to memory (T0 working memory, auto-evicts to T1).
+    // This feeds the HNSW index and refreshes the Ghost Bleed Buffer
+    // so future requests benefit from memory of past conversations.
+    let memory_frame_count = {
+        let mut guard = state.memory.write().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("memory store lock failed: {e}"),
+                }),
+            )
+        })?;
+        guard.store(*verified_frame.clone()).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("memory store failed: {e}"),
+                }),
+            )
+        })?;
+        guard.total_frame_count()
+    };
 
     // Extract gamma values from active slots
     let gamma: Vec<f32> = (0..MAX_SLOTS)
@@ -209,6 +251,8 @@ pub async fn think(
         slot_states,
         proof_steps: pipeline_output.proof_steps,
         safety_score: pipeline_output.safety_score,
+        memory_frame_count,
+        ghost_count: pipeline_output.ghost_count,
         timing_ms: TimingMs {
             encode_ms,
             decode_ms,
