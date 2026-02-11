@@ -285,3 +285,31 @@ approach is probabilistic and gameable), single aggregate safety score
 without per-axiom breakdown (rejected: loses auditability), safety as a
 HardStrand (rejected: safety must run unconditionally, not via cosine
 routing — same rationale as ADR-018 for CertaintyEngine).
+
+## ADR-022: Ghost Bleed Architecture (2026-02-11)
+
+**Decision:** Ghost bleed is split across two crates with no cross-dependency.
+`volt-db` produces ghost gist vectors (`Vec<[f32; 256]>`) via the BleedEngine
+and per-strand HNSW indices. `volt-soft` consumes them as a parameter to
+`forward_with_ghosts()` / `rar_loop_with_ghosts()`. Integration code
+(volt-server or tests) wires them together.
+**Reason:** `volt-soft` and `volt-db` are at the same dependency level — neither
+can import the other. Passing gist vectors as plain `[f32; 256]` arrays respects
+this boundary while requiring zero new shared types. The `FrameGist` struct lives
+in `volt-db` since only `volt-db` needs `frame_id`/`strand_id` metadata; `volt-soft`
+only needs the raw vectors.
+**Ghost attention design:** Ghost gists participate as additional Key/Value sources
+with a **separate softmax**, blended with slot attention messages via an alpha weight:
+`final_msg = (1-α)·slot_msg + α·ghost_msg`. This ensures ghost frames provide subtle
+memory influence without destabilizing the primary slot attention dynamics. Alpha
+defaults to 0.1.
+**HNSW indexing:** Per-strand HNSW indices using `hnsw_rs` (same library as
+ADR-011). Index is rebuilt from stored gists on load, not serialized — matching the
+Codebook pattern from ADR-012. R₀ gist extraction uses `volt_bus::superpose` to
+combine all active slot R₀ vectors into a single 256-dim unit vector per frame.
+**Alternatives considered:** Shared `GhostGist` type in `volt-core` (rejected:
+`volt-core` should not know about ghost frames — they are a memory concept, not a
+fundamental data structure), ghost frames as full TensorFrames passed to soft core
+(rejected: wastes memory and compute — only R₀ gist needed for cross-attention),
+single combined softmax over slots + ghosts (rejected: ghosts could dominate attention
+when the buffer is large; separate softmax with alpha blending gives explicit control).

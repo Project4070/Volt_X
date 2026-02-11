@@ -35,7 +35,7 @@ Add persistent memory so the system remembers across conversations. This is wher
 
 ---
 
-## Milestone 4.2: HNSW Indexing + Ghost Bleed (Week 29-31)
+## Milestone 4.2: HNSW Indexing + Ghost Bleed (Week 29-31) **[DONE]**
 
 **Crate:** `volt-db` (extend)
 

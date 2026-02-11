@@ -3442,6 +3442,7 @@ dependencies = [
 name = "volt-db"
 version = "0.1.0"
 dependencies = [
+ "hnsw_rs",
  "proptest",
  "serde",
  "serde_json",

@@ -41,6 +41,7 @@ mod nn;
 // Public modules — always compiled (CPU path)
 pub mod attention;
 pub mod diffusion;
+pub mod ghost_attention;
 pub mod rar;
 pub mod vfn;
 
@@ -50,10 +51,10 @@ pub mod gpu;
 #[cfg(feature = "gpu")]
 pub mod training;
 
-use volt_core::{TensorFrame, VoltError};
+use volt_core::{TensorFrame, VoltError, SLOT_DIM};
 
 use crate::attention::SlotAttention;
-use crate::rar::{rar_loop, RarConfig, RarResult};
+use crate::rar::{rar_loop, rar_loop_with_ghosts, GhostConfig, RarConfig, RarResult};
 use crate::vfn::Vfn;
 
 /// Phase 1 stub: copies input frame to output unchanged.
@@ -119,6 +120,54 @@ pub fn process_rar(frame: &TensorFrame) -> Result<RarResult, VoltError> {
         })?
 }
 
+/// Process a frame through the RAR loop with ghost frame cross-attention.
+///
+/// Like [`process_rar`] but includes ghost gist vectors from the Bleed
+/// Buffer as additional Key/Value sources in the Attend phase. Ghost
+/// frames provide subtle memory influence controlled by `alpha`.
+///
+/// Spawns a thread with adequate stack (4 MB) because TensorFrame
+/// copies in the RAR loop require more stack than the default.
+///
+/// # Example
+///
+/// ```
+/// use volt_core::{TensorFrame, SlotData, SlotRole, SLOT_DIM};
+/// use volt_soft::process_rar_with_ghosts;
+///
+/// let mut frame = TensorFrame::new();
+/// let mut slot = SlotData::new(SlotRole::Agent);
+/// slot.write_resolution(0, [0.1; SLOT_DIM]);
+/// frame.write_slot(0, slot).unwrap();
+/// frame.normalize_slot(0, 0).unwrap();
+///
+/// let result = process_rar_with_ghosts(&frame, &[], 0.1).unwrap();
+/// assert!(result.iterations >= 1);
+/// ```
+pub fn process_rar_with_ghosts(
+    frame: &TensorFrame,
+    ghost_gists: &[[f32; SLOT_DIM]],
+    alpha: f32,
+) -> Result<RarResult, VoltError> {
+    let frame = Box::new(frame.clone());
+    let gists = ghost_gists.to_vec();
+    std::thread::Builder::new()
+        .stack_size(4 * 1024 * 1024)
+        .spawn(move || {
+            let vfn = Vfn::new_random(42);
+            let attention = SlotAttention::new_random(43);
+            let config = RarConfig::default();
+            let ghost_config = GhostConfig { gists, alpha };
+            rar_loop_with_ghosts(&frame, &vfn, &attention, &config, &ghost_config)
+        })
+        .map_err(|e| VoltError::FrameError {
+            message: format!("failed to spawn RAR thread: {e}"),
+        })?
+        .join()
+        .map_err(|_| VoltError::FrameError {
+            message: "RAR thread panicked".to_string(),
+        })?
+}
 
 #[cfg(test)]
 mod tests {
@@ -171,5 +220,34 @@ mod tests {
         let frame = TensorFrame::new();
         let result = process_rar(&frame).unwrap();
         assert_eq!(result.frame.active_slot_count(), 0);
+    }
+
+    #[test]
+    fn process_rar_with_ghosts_runs_inference() {
+        let mut frame = TensorFrame::new();
+        let mut slot = SlotData::new(SlotRole::Agent);
+        slot.write_resolution(0, [0.1; SLOT_DIM]);
+        frame.write_slot(0, slot).unwrap();
+        frame.meta[0].certainty = 0.9;
+        frame.normalize_slot(0, 0).unwrap();
+
+        let mut ghost = [0.0f32; SLOT_DIM];
+        ghost[0] = 1.0;
+
+        let result = process_rar_with_ghosts(&frame, &[ghost], 0.1).unwrap();
+        assert!(result.iterations >= 1);
+        assert_eq!(result.frame.active_slot_count(), 1);
+    }
+
+    #[test]
+    fn process_rar_with_ghosts_empty_ghosts() {
+        let mut frame = TensorFrame::new();
+        let mut slot = SlotData::new(SlotRole::Agent);
+        slot.write_resolution(0, [0.1; SLOT_DIM]);
+        frame.write_slot(0, slot).unwrap();
+        frame.normalize_slot(0, 0).unwrap();
+
+        let result = process_rar_with_ghosts(&frame, &[], 0.1).unwrap();
+        assert!(result.iterations >= 1);
     }
 }

@@ -1,18 +1,24 @@
-//! VoltStore — unified memory facade combining T0 and T1.
+//! VoltStore — unified memory facade combining T0, T1, and indices.
 //!
 //! VoltStore is the primary API for storing and retrieving TensorFrames.
 //! It manages the T0 working memory (ring buffer) and T1 strand storage,
 //! handles automatic eviction from T0 to T1, strand management, frame ID
-//! generation, and persistence.
+//! generation, persistence, HNSW semantic indexing, temporal indexing,
+//! and the Ghost Bleed Engine.
 
 use std::path::Path;
 
-use volt_core::{TensorFrame, VoltError};
+use volt_core::{TensorFrame, VoltError, SLOT_DIM};
 
+use crate::ghost::{BleedEngine, GhostBuffer};
+use crate::gist::extract_gist;
+use crate::hnsw_index::{HnswIndex, SimilarityResult};
+use crate::temporal::TemporalIndex;
 use crate::tier0::WorkingMemory;
 use crate::tier1::StrandStore;
 
-/// Unified memory facade combining T0 working memory and T1 strand storage.
+/// Unified memory facade combining T0 working memory, T1 strand storage,
+/// HNSW semantic index, temporal index, and Ghost Bleed Engine.
 ///
 /// # Frame Lifecycle
 ///
@@ -20,7 +26,9 @@ use crate::tier1::StrandStore;
 /// 2. Frame gets a unique `frame_id` and the active `strand_id`
 /// 3. Frame is placed in T0 (working memory)
 /// 4. If T0 is full, the oldest frame is evicted to T1 (strand storage)
-/// 5. Retrieval searches T0 first, then T1
+/// 5. R₀ gist is extracted and inserted into HNSW + temporal indices
+/// 6. The Bleed Engine refreshes the ghost buffer with similar historical gists
+/// 7. Retrieval searches T0 first, then T1
 ///
 /// # Example
 ///
@@ -36,12 +44,28 @@ use crate::tier1::StrandStore;
 /// let id = store.store(frame).unwrap();
 /// assert!(store.get_by_id(id).is_some());
 /// ```
-#[derive(Debug, Clone)]
 pub struct VoltStore {
     t0: WorkingMemory,
     t1: StrandStore,
     active_strand: u64,
     next_id: u64,
+    hnsw: HnswIndex,
+    temporal: TemporalIndex,
+    bleed: BleedEngine,
+}
+
+impl std::fmt::Debug for VoltStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoltStore")
+            .field("t0_len", &self.t0.len())
+            .field("t1_len", &self.t1.total_frame_count())
+            .field("active_strand", &self.active_strand)
+            .field("next_id", &self.next_id)
+            .field("hnsw_entries", &self.hnsw.total_entries())
+            .field("temporal_entries", &self.temporal.len())
+            .field("ghost_count", &self.bleed.buffer().len())
+            .finish()
+    }
 }
 
 impl Default for VoltStore {
@@ -71,13 +95,18 @@ impl VoltStore {
             t1,
             active_strand: 0,
             next_id: 1,
+            hnsw: HnswIndex::new(),
+            temporal: TemporalIndex::new(),
+            bleed: BleedEngine::new(),
         }
     }
 
     /// Stores a frame, assigning it a unique frame ID and the active strand ID.
     ///
     /// The frame is placed in T0. If T0 is full, the oldest frame is
-    /// evicted to T1 automatically.
+    /// evicted to T1 automatically. The frame's R₀ gist (if present) is
+    /// extracted and inserted into the HNSW and temporal indices, and the
+    /// Bleed Engine refreshes the ghost buffer.
     ///
     /// Returns the assigned frame ID.
     ///
@@ -99,8 +128,18 @@ impl VoltStore {
         frame.frame_meta.frame_id = frame_id;
         frame.frame_meta.strand_id = self.active_strand;
 
+        // Extract gist before storing (we need the frame reference)
+        let gist = extract_gist(&frame)?;
+
         if let Some(evicted) = self.t0.store(frame) {
             self.t1.store(evicted)?;
+        }
+
+        // Update indices with gist
+        if let Some(ref g) = gist {
+            self.hnsw.insert(g)?;
+            self.temporal.insert(g.created_at, frame_id);
+            self.bleed.on_new_frame(g, &self.hnsw)?;
         }
 
         Ok(frame_id)
@@ -267,9 +306,133 @@ impl VoltStore {
         &self.t1
     }
 
+    // --- Semantic search (Milestone 4.2) ---
+
+    /// Queries ALL strands for the top-k most similar frames by R₀ gist.
+    ///
+    /// Returns results sorted by ascending cosine distance (closest first).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    /// use volt_core::{TensorFrame, SlotData, SlotRole, SLOT_DIM};
+    ///
+    /// let mut store = VoltStore::new();
+    /// let mut frame = TensorFrame::new();
+    /// let mut slot = SlotData::new(SlotRole::Agent);
+    /// slot.write_resolution(0, [0.1; SLOT_DIM]);
+    /// frame.write_slot(0, slot).unwrap();
+    /// store.store(frame).unwrap();
+    ///
+    /// let results = store.query_similar(&[0.1; SLOT_DIM], 10);
+    /// assert_eq!(results.len(), 1);
+    /// ```
+    pub fn query_similar(&self, query: &[f32; SLOT_DIM], k: usize) -> Vec<SimilarityResult> {
+        self.hnsw.query_all(query, k)
+    }
+
+    /// Queries a single strand for the top-k most similar frames by R₀ gist.
+    ///
+    /// Returns an empty vec if the strand has no indexed frames.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    /// use volt_core::{TensorFrame, SlotData, SlotRole, SLOT_DIM};
+    ///
+    /// let mut store = VoltStore::new();
+    /// let mut frame = TensorFrame::new();
+    /// let mut slot = SlotData::new(SlotRole::Agent);
+    /// slot.write_resolution(0, [0.1; SLOT_DIM]);
+    /// frame.write_slot(0, slot).unwrap();
+    /// store.store(frame).unwrap();
+    ///
+    /// let results = store.query_similar_in_strand(0, &[0.1; SLOT_DIM], 10);
+    /// assert_eq!(results.len(), 1);
+    /// ```
+    pub fn query_similar_in_strand(
+        &self,
+        strand_id: u64,
+        query: &[f32; SLOT_DIM],
+        k: usize,
+    ) -> Vec<SimilarityResult> {
+        self.hnsw.query_strand(strand_id, query, k)
+    }
+
+    /// Returns all frame IDs created within the time range `[start, end]` inclusive.
+    ///
+    /// Timestamps are in microseconds.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    /// use volt_core::TensorFrame;
+    ///
+    /// let store = VoltStore::new();
+    /// let results = store.query_time_range(0, u64::MAX);
+    /// assert!(results.is_empty());
+    /// ```
+    pub fn query_time_range(&self, start: u64, end: u64) -> Vec<u64> {
+        self.temporal.query_range(start, end)
+    }
+
+    /// Returns a reference to the Ghost Bleed Buffer.
+    ///
+    /// The buffer contains R₀ gists from historical frames that are
+    /// semantically similar to the most recently stored frame. These
+    /// gists are intended to be passed to the Soft Core's RAR Attend
+    /// phase as additional Key/Value sources.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    ///
+    /// let store = VoltStore::new();
+    /// assert!(store.ghost_buffer().is_empty());
+    /// ```
+    pub fn ghost_buffer(&self) -> &GhostBuffer {
+        self.bleed.buffer()
+    }
+
+    /// Returns ghost gist vectors for consumption by the Soft Core.
+    ///
+    /// This is a convenience method that extracts just the `[f32; 256]`
+    /// vectors from the ghost buffer, suitable for passing directly
+    /// to the RAR Attend phase.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    ///
+    /// let store = VoltStore::new();
+    /// let gists = store.ghost_gists();
+    /// assert!(gists.is_empty());
+    /// ```
+    pub fn ghost_gists(&self) -> Vec<[f32; SLOT_DIM]> {
+        self.bleed.buffer().gist_vectors()
+    }
+
+    /// Returns the total number of entries in the HNSW index.
+    pub fn hnsw_entries(&self) -> usize {
+        self.hnsw.total_entries()
+    }
+
+    /// Returns the total number of entries in the temporal index.
+    pub fn temporal_entries(&self) -> usize {
+        self.temporal.len()
+    }
+
+    // --- Persistence ---
+
     /// Saves T1 strand storage to disk for persistence across restarts.
     ///
     /// T0 is intentionally not saved — it's ephemeral working memory.
+    /// HNSW and temporal indices are rebuilt on load from T1 data.
     ///
     /// # Errors
     ///
@@ -290,6 +453,7 @@ impl VoltStore {
 
     /// Loads T1 strand storage from disk, creating a fresh T0.
     ///
+    /// Rebuilds the HNSW and temporal indices by scanning all T1 frames.
     /// The active strand is set to the default (0). If strand 0
     /// doesn't exist in the loaded data, it is created.
     ///
@@ -310,13 +474,30 @@ impl VoltStore {
         if !t1.has_strand(0) {
             t1.create_strand(0);
         }
+
         // Find the highest frame_id in T1 to set next_id correctly
         let max_id = Self::find_max_frame_id(&t1);
+
+        // Rebuild HNSW and temporal indices from T1 frames
+        let mut hnsw = HnswIndex::new();
+        let mut temporal = TemporalIndex::new();
+        for strand_id in t1.list_strands() {
+            for frame in t1.get_by_strand(strand_id) {
+                if let Some(gist) = extract_gist(frame)? {
+                    hnsw.insert(&gist)?;
+                    temporal.insert(gist.created_at, gist.frame_id);
+                }
+            }
+        }
+
         Ok(Self {
             t0: WorkingMemory::new(),
             t1,
             active_strand: 0,
             next_id: max_id + 1,
+            hnsw,
+            temporal,
+            bleed: BleedEngine::new(),
         })
     }
 
@@ -493,7 +674,7 @@ mod tests {
         let t1_count = store.t1_len();
         assert!(t1_count > 0);
 
-        let dir = std::env::temp_dir().join("volt_db_test_store");
+        let dir = std::env::temp_dir().join("volt_db_test_store_42");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test_store.json");
 
@@ -512,6 +693,10 @@ mod tests {
             );
         }
 
+        // HNSW and temporal indices should be rebuilt
+        assert_eq!(loaded.hnsw_entries(), t1_count);
+        assert_eq!(loaded.temporal_entries(), t1_count);
+
         // Clean up
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
@@ -524,7 +709,7 @@ mod tests {
             store.store(make_frame_with_content()).unwrap();
         }
 
-        let dir = std::env::temp_dir().join("volt_db_test_ids");
+        let dir = std::env::temp_dir().join("volt_db_test_ids_42");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test_ids.json");
 
@@ -561,5 +746,78 @@ mod tests {
         let store = VoltStore::default();
         assert_eq!(store.active_strand(), 0);
         assert!(store.list_strands().contains(&0));
+    }
+
+    // --- Milestone 4.2 specific tests ---
+
+    #[test]
+    fn store_indexes_frames_with_r0() {
+        let mut store = VoltStore::new();
+        store.store(make_frame_with_content()).unwrap();
+        assert_eq!(store.hnsw_entries(), 1);
+        assert_eq!(store.temporal_entries(), 1);
+    }
+
+    #[test]
+    fn store_skips_indexing_frames_without_r0() {
+        let mut store = VoltStore::new();
+        // Frame with no R₀ data
+        store.store(TensorFrame::new()).unwrap();
+        assert_eq!(store.hnsw_entries(), 0);
+        assert_eq!(store.temporal_entries(), 0);
+    }
+
+    #[test]
+    fn query_similar_finds_stored_frames() {
+        let mut store = VoltStore::new();
+        store.store(make_frame_with_content()).unwrap();
+
+        let results = store.query_similar(&[0.5; SLOT_DIM], 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].frame_id, 1);
+    }
+
+    #[test]
+    fn query_similar_in_strand_respects_isolation() {
+        let mut store = VoltStore::new();
+
+        // Store in strand 0
+        store.store(make_frame_with_content()).unwrap();
+
+        // Store in strand 1
+        store.switch_strand(1).unwrap();
+        store.store(make_frame_with_content()).unwrap();
+
+        let results = store.query_similar_in_strand(0, &[0.5; SLOT_DIM], 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].strand_id, 0);
+    }
+
+    #[test]
+    fn ghost_buffer_populates_on_store() {
+        let mut store = VoltStore::new();
+
+        // Store some frames so the HNSW has entries
+        for _ in 0..5 {
+            store.store(make_frame_with_content()).unwrap();
+        }
+
+        // The ghost buffer should have been refreshed
+        // (may have entries from the HNSW query)
+        // With identical gists, all should match
+        assert!(store.ghost_buffer().len() > 0);
+    }
+
+    #[test]
+    fn ghost_gists_returns_vectors() {
+        let mut store = VoltStore::new();
+        for _ in 0..3 {
+            store.store(make_frame_with_content()).unwrap();
+        }
+        let gists = store.ghost_gists();
+        // Each gist should be 256 dims
+        for g in &gists {
+            assert_eq!(g.len(), SLOT_DIM);
+        }
     }
 }

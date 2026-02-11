@@ -15,6 +15,7 @@
 
 use crate::attention::SlotAttention;
 use crate::diffusion::{self, DiffusionConfig};
+use crate::ghost_attention::{self, GhostAttentionConfig};
 use crate::vfn::Vfn;
 use volt_core::{TensorFrame, VoltError, MAX_SLOTS, NUM_RESOLUTIONS, SLOT_DIM};
 
@@ -287,6 +288,223 @@ pub fn rar_loop(
     })
 }
 
+/// Configuration for ghost frame cross-attention in the RAR loop.
+///
+/// Provides the ghost gist vectors and the alpha blending weight.
+///
+/// # Example
+///
+/// ```
+/// use volt_soft::rar::GhostConfig;
+/// use volt_core::SLOT_DIM;
+///
+/// let config = GhostConfig {
+///     gists: vec![[0.1; SLOT_DIM]],
+///     alpha: 0.1,
+/// };
+/// assert_eq!(config.gists.len(), 1);
+/// ```
+#[derive(Debug, Clone)]
+pub struct GhostConfig {
+    /// Ghost gist vectors from the bleed buffer.
+    /// Each is a 256-dim R₀ gist.
+    pub gists: Vec<[f32; SLOT_DIM]>,
+
+    /// Weight for ghost attention blending (0.0–1.0).
+    /// Default: 0.1 (subtle memory influence).
+    pub alpha: f32,
+}
+
+/// Runs the RAR loop with ghost frame cross-attention.
+///
+/// Identical to [`rar_loop`] except the Attend phase uses
+/// [`ghost_attention::forward_with_ghosts`] to include ghost gists
+/// as additional Key/Value sources in cross-slot attention.
+///
+/// Ghost gists are blended with the standard slot attention
+/// messages via the `ghost_config.alpha` weight.
+///
+/// # Errors
+///
+/// Returns [`VoltError::FrameError`] if the configured resolution is out of range.
+/// Returns [`VoltError::Internal`] if numerical issues occur during inference.
+///
+/// # Example
+///
+/// ```no_run
+/// use volt_soft::rar::{rar_loop_with_ghosts, RarConfig, GhostConfig};
+/// use volt_soft::vfn::Vfn;
+/// use volt_soft::attention::SlotAttention;
+/// use volt_core::{TensorFrame, SlotRole, SLOT_DIM};
+///
+/// let vfn = Vfn::new_random(42);
+/// let attn = SlotAttention::new_random(43);
+/// let config = RarConfig::default();
+/// let ghost_config = GhostConfig { gists: vec![], alpha: 0.1 };
+///
+/// let mut frame = TensorFrame::new();
+/// frame.write_at(0, 0, SlotRole::Agent, [0.1; SLOT_DIM]).unwrap();
+/// frame.normalize_slot(0, 0).unwrap();
+///
+/// let result = rar_loop_with_ghosts(&frame, &vfn, &attn, &config, &ghost_config).unwrap();
+/// assert!(result.iterations <= config.max_iterations);
+/// ```
+pub fn rar_loop_with_ghosts(
+    input: &TensorFrame,
+    vfn: &Vfn,
+    attention: &SlotAttention,
+    config: &RarConfig,
+    ghost_config: &GhostConfig,
+) -> Result<RarResult, VoltError> {
+    // Validate config
+    if config.resolution >= NUM_RESOLUTIONS {
+        return Err(VoltError::FrameError {
+            message: format!(
+                "RAR resolution {} out of range (max {})",
+                config.resolution, NUM_RESOLUTIONS
+            ),
+        });
+    }
+
+    let ghost_attn_config = GhostAttentionConfig {
+        alpha: ghost_config.alpha,
+    };
+
+    let mut frame = input.clone();
+    let mut converged = [false; MAX_SLOTS];
+    let mut deltas = [0.0f32; MAX_SLOTS];
+
+    // Mark slots as active or trivially converged
+    for (i, conv) in converged.iter_mut().enumerate() {
+        let has_data = frame.slots[i]
+            .as_ref()
+            .is_some_and(|slot| slot.resolutions[config.resolution].is_some());
+        if !has_data {
+            *conv = true;
+        }
+    }
+
+    // Early exit: no active slots
+    if converged.iter().all(|&c| c) {
+        return Ok(RarResult {
+            frame,
+            iterations: 0,
+            converged,
+            final_deltas: deltas,
+        });
+    }
+
+    let mut iteration = 0;
+
+    while iteration < config.max_iterations {
+        // Check if all slots converged
+        if converged.iter().all(|&c| c) {
+            break;
+        }
+        iteration += 1;
+
+        // Snapshot current slot states at target resolution
+        let mut states: [Option<[f32; SLOT_DIM]>; MAX_SLOTS] = [const { None }; MAX_SLOTS];
+        for (i, state) in states.iter_mut().enumerate() {
+            if let Some(slot) = &frame.slots[i] {
+                *state = slot.resolutions[config.resolution];
+            }
+        }
+
+        // === ROOT PHASE ===
+        let mut drifts: [Option<[f32; SLOT_DIM]>; MAX_SLOTS] = [const { None }; MAX_SLOTS];
+        for i in 0..MAX_SLOTS {
+            if converged[i] {
+                continue;
+            }
+            if let Some(state) = &states[i] {
+                drifts[i] = Some(vfn.forward(state)?);
+            }
+        }
+
+        // === ATTEND PHASE (with ghost frames) ===
+        let messages =
+            ghost_attention::forward_with_ghosts(attention, &states, &ghost_config.gists, &ghost_attn_config)?;
+
+        // === DIFFUSION NOISE ===
+        let noise_vectors = if let Some(ref diff_config) = config.diffusion {
+            let active_mask = {
+                let mut mask = [false; MAX_SLOTS];
+                for (i, conv) in converged.iter().enumerate() {
+                    if !conv {
+                        mask[i] = states[i].is_some();
+                    }
+                }
+                mask
+            };
+            Some(Box::new(diffusion::generate_noise(
+                diff_config,
+                &active_mask,
+                iteration,
+            )?))
+        } else {
+            None
+        };
+
+        // === REFINE PHASE ===
+        for i in 0..MAX_SLOTS {
+            if converged[i] {
+                continue;
+            }
+            if let (Some(state), Some(drift)) = (&states[i], &drifts[i]) {
+                let msg = &messages[i];
+
+                let mut new_state = [0.0f32; SLOT_DIM];
+                for d in 0..SLOT_DIM {
+                    new_state[d] = state[d] + config.dt * (drift[d] + config.beta * msg[d]);
+                }
+
+                if let Some(ref noise_arr) = noise_vectors
+                    && let Some(noise) = &noise_arr[i]
+                {
+                    for d in 0..SLOT_DIM {
+                        new_state[d] += noise[d];
+                    }
+                }
+
+                let norm: f32 = new_state.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm < 1e-10 {
+                    converged[i] = true;
+                    continue;
+                }
+                for x in &mut new_state {
+                    *x /= norm;
+                }
+
+                let delta: f32 = new_state
+                    .iter()
+                    .zip(state.iter())
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum::<f32>()
+                    .sqrt();
+                deltas[i] = delta;
+
+                if delta < config.epsilon {
+                    converged[i] = true;
+                }
+
+                if let Some(slot) = &mut frame.slots[i] {
+                    slot.resolutions[config.resolution] = Some(new_state);
+                }
+            }
+        }
+    }
+
+    frame.frame_meta.rar_iterations = iteration;
+
+    Ok(RarResult {
+        frame,
+        iterations: iteration,
+        converged,
+        final_deltas: deltas,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,6 +693,95 @@ mod tests {
         assert!(
             (norm - 1.0).abs() < 1e-5,
             "output should be unit-normalized, got norm={}",
+            norm
+        );
+    }
+
+    // --- Ghost-aware RAR loop tests ---
+
+    #[test]
+    fn ghost_rar_empty_ghosts_matches_rar() {
+        let vfn = make_vfn();
+        let attn = make_attention();
+        let config = RarConfig {
+            max_iterations: 3,
+            ..RarConfig::default()
+        };
+        let ghost_config = GhostConfig {
+            gists: vec![],
+            alpha: 0.1,
+        };
+
+        let mut frame = TensorFrame::new();
+        frame
+            .write_at(0, 0, SlotRole::Agent, normalized_vector(700))
+            .unwrap();
+
+        let normal = rar_loop(&frame, &vfn, &attn, &config).unwrap();
+        let with_ghosts =
+            rar_loop_with_ghosts(&frame, &vfn, &attn, &config, &ghost_config).unwrap();
+
+        assert_eq!(normal.iterations, with_ghosts.iterations);
+        assert_eq!(normal.converged, with_ghosts.converged);
+    }
+
+    #[test]
+    fn ghost_rar_runs_and_terminates() {
+        let vfn = make_vfn();
+        let attn = make_attention();
+        let config = RarConfig {
+            max_iterations: 5,
+            ..RarConfig::default()
+        };
+
+        // Create some ghost gists
+        let mut ghost_gist = [0.0f32; SLOT_DIM];
+        ghost_gist[0] = 1.0;
+        let ghost_config = GhostConfig {
+            gists: vec![ghost_gist],
+            alpha: 0.2,
+        };
+
+        let mut frame = TensorFrame::new();
+        frame
+            .write_at(0, 0, SlotRole::Agent, normalized_vector(800))
+            .unwrap();
+
+        let result =
+            rar_loop_with_ghosts(&frame, &vfn, &attn, &config, &ghost_config).unwrap();
+        assert!(result.iterations <= config.max_iterations);
+        assert!(result.frame.slots[0].is_some());
+    }
+
+    #[test]
+    fn ghost_rar_output_normalized() {
+        let vfn = make_vfn();
+        let attn = make_attention();
+        let config = RarConfig {
+            max_iterations: 3,
+            ..RarConfig::default()
+        };
+
+        let mut ghost_gist = [0.0f32; SLOT_DIM];
+        ghost_gist[42] = 1.0;
+        let ghost_config = GhostConfig {
+            gists: vec![ghost_gist],
+            alpha: 0.3,
+        };
+
+        let mut frame = TensorFrame::new();
+        frame
+            .write_at(0, 0, SlotRole::Agent, normalized_vector(900))
+            .unwrap();
+
+        let result =
+            rar_loop_with_ghosts(&frame, &vfn, &attn, &config, &ghost_config).unwrap();
+        let slot = result.frame.read_slot(0).unwrap();
+        let vec = slot.resolutions[0].as_ref().unwrap();
+        let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-5,
+            "ghost RAR output should be unit-normalized, got norm={}",
             norm
         );
     }
