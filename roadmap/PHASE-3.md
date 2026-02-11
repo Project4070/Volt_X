@@ -28,7 +28,8 @@ Add deterministic CPU tools and verification. The system should now be able to d
 
 ---
 
-## Milestone 3.2: More Hard Strands (Week 21-23)
+## Milestone 3.2: More Hard Strands (Week 21-23) -- DONE
+
 
 **Crate:** `volt-hard` (extend)
 
@@ -47,23 +48,23 @@ Add deterministic CPU tools and verification. The system should now be able to d
 
 ---
 
-## Milestone 3.3: Safety Layer (Week 24-25)
+## Milestone 3.3: Safety Layer (Week 24-25) -- DONE
 
 **Crate:** `volt-safety`
 
 ### What You Build
-- Axiomatic Guard: 5 hardcoded invariants (K1-K5) as constant vectors
-- Transition Monitor: checks every frame transition against invariants (inner product)
-- Violation Scorer: computes violation score, triggers warning or halt
-- Omega Veto: when triggered, freezes all processing, returns safe default, logs state
-- Integration: Safety layer wraps the entire Soft Core -> Hard Core pipeline
+- [x] Axiomatic Guard: 5 hardcoded invariants (K1-K5) as constant vectors
+- [x] Transition Monitor: checks every frame transition against invariants (inner product)
+- [x] Violation Scorer: computes violation score, triggers warning or halt
+- [x] Omega Veto: when triggered, freezes all processing, returns safe default, logs state
+- [x] Integration: Safety layer wraps the entire Soft Core -> Hard Core pipeline
 
 ### What You Test
-- Normal query -> safety layer passes through, no interference
-- Query touching K1 (harm) -> violation detected -> Omega Veto fires -> safe default response
-- Omega Veto logs include full frame state at time of trigger
-- Safety layer adds < 1ms latency to normal queries
-- Cannot bypass safety by crafting special frame structures (adversarial testing)
+- [x] Normal query -> safety layer passes through, no interference
+- [x] Query touching K1 (harm) -> violation detected -> Omega Veto fires -> safe default response
+- [x] Omega Veto logs include full frame state at time of trigger
+- [x] Safety layer adds < 1ms latency to normal queries
+- [x] Cannot bypass safety by crafting special frame structures (adversarial testing)
 
 **Duration:** 2 weeks.
 

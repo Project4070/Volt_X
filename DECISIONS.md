@@ -257,3 +257,31 @@ CodeRunner (10).
 **Alternatives considered:** Inline operand vectors in S6 R1/R2 (rejected:
 limits to two fixed operands, can't reference arbitrary slots), separate
 HDC-specific frame format (rejected: breaks TensorFrame universality).
+
+## ADR-021: Safety Layer Architecture (2026-02-11)
+
+**Decision:** The safety layer in `volt-safety` uses five constant axiom
+vectors (K1-K5) in HDC space, checked via cosine similarity against every
+active slot's R0 embedding before and after pipeline processing. Violations
+trigger the Omega Veto which returns a safe empty frame and logs the full
+trigger state for audit.
+**Reason:** Cosine similarity against constant vectors is O(S×K) per frame
+(S=active slots, K=5 axioms), adding negligible latency (< 1ms measured).
+Using the same HDC space as strand capability vectors means axiom vectors
+are directly comparable to frame content — no separate embedding space needed.
+The Omega Veto is a struct method (not a trait), making it impossible to
+override via polymorphism. Wrapping both pre- and post-pipeline ensures
+neither input nor output can violate axioms.
+**Axiom design:** Each axiom is a deterministic 256-dim unit vector built
+from a unique seed using the same splitmix64 hash as Hard Strand capability
+vectors. Thresholds are set at 0.65-0.70 cosine similarity. K1 (harm), K2
+(deception), K3 (privacy), K5 (integrity) are Halt-severity. K4 (autonomy)
+is Warning-severity, allowing processing to continue with logging.
+**Module structure:** `axiom.rs` (K1-K5 definitions), `monitor.rs`
+(TransitionMonitor), `scorer.rs` (ViolationScorer), `veto.rs` (OmegaVeto),
+`layer.rs` (SafetyLayer wrapping HardCorePipeline).
+**Alternatives considered:** Per-slot safety classifiers (rejected: neural
+approach is probabilistic and gameable), single aggregate safety score
+without per-axiom breakdown (rejected: loses auditability), safety as a
+HardStrand (rejected: safety must run unconditionally, not via cosine
+routing — same rationale as ADR-018 for CertaintyEngine).

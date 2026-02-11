@@ -52,9 +52,13 @@ pub mod training;
 
 use volt_core::{TensorFrame, VoltError};
 
+use crate::attention::SlotAttention;
+use crate::rar::{rar_loop, RarConfig, RarResult};
+use crate::vfn::Vfn;
+
 /// Phase 1 stub: copies input frame to output unchanged.
 ///
-/// In later phases, use [`rar::rar_loop`] instead for real inference.
+/// Deprecated: use [`process_rar`] instead for real inference.
 ///
 /// # Example
 ///
@@ -68,14 +72,57 @@ use volt_core::{TensorFrame, VoltError};
 /// let result = process_stub(&frame).unwrap();
 /// assert_eq!(result.active_slot_count(), 1);
 /// ```
+#[deprecated(note = "use process_rar() for real RAR inference")]
 pub fn process_stub(frame: &TensorFrame) -> Result<TensorFrame, VoltError> {
-    // MILESTONE: 2.4 — Replace with GPU RAR inference loop
     Ok(frame.clone())
+}
+
+/// Process a frame through the RAR inference loop with default parameters.
+///
+/// Creates randomly-initialized VFN and SlotAttention models with fixed
+/// seeds (42, 43) and runs the RAR loop with default configuration.
+/// Returns the full [`RarResult`] including iteration count and
+/// convergence diagnostics.
+///
+/// Spawns a thread with adequate stack (4 MB) because TensorFrame
+/// copies in the RAR loop require more stack than the default.
+///
+/// # Example
+///
+/// ```
+/// use volt_core::{TensorFrame, SlotData, SlotRole, SLOT_DIM};
+/// use volt_soft::process_rar;
+///
+/// let mut frame = TensorFrame::new();
+/// frame.write_at(0, 0, SlotRole::Agent, [0.1; SLOT_DIM]).unwrap();
+/// frame.normalize_slot(0, 0).unwrap();
+///
+/// let result = process_rar(&frame).unwrap();
+/// assert!(result.iterations >= 1);
+/// ```
+pub fn process_rar(frame: &TensorFrame) -> Result<RarResult, VoltError> {
+    let frame = Box::new(frame.clone());
+    std::thread::Builder::new()
+        .stack_size(4 * 1024 * 1024)
+        .spawn(move || {
+            let vfn = Vfn::new_random(42);
+            let attention = SlotAttention::new_random(43);
+            let config = RarConfig::default();
+            rar_loop(&frame, &vfn, &attention, &config)
+        })
+        .map_err(|e| VoltError::FrameError {
+            message: format!("failed to spawn RAR thread: {e}"),
+        })?
+        .join()
+        .map_err(|_| VoltError::FrameError {
+            message: "RAR thread panicked".to_string(),
+        })?
 }
 
 
 #[cfg(test)]
 mod tests {
+    #[allow(deprecated)]
     use super::*;
     use volt_core::{SlotData, SlotRole, SLOT_DIM};
 
@@ -103,5 +150,26 @@ mod tests {
         let frame = TensorFrame::new();
         let result = process_stub(&frame).unwrap();
         assert_eq!(result.active_slot_count(), 0);
+    }
+
+    #[test]
+    fn process_rar_runs_inference() {
+        let mut frame = TensorFrame::new();
+        let mut slot = SlotData::new(SlotRole::Agent);
+        slot.write_resolution(0, [0.1; SLOT_DIM]);
+        frame.write_slot(0, slot).unwrap();
+        frame.meta[0].certainty = 0.9;
+        frame.normalize_slot(0, 0).unwrap();
+
+        let result = process_rar(&frame).unwrap();
+        assert!(result.iterations >= 1);
+        assert_eq!(result.frame.active_slot_count(), 1);
+    }
+
+    #[test]
+    fn process_rar_empty_frame() {
+        let frame = TensorFrame::new();
+        let result = process_rar(&frame).unwrap();
+        assert_eq!(result.frame.active_slot_count(), 0);
     }
 }

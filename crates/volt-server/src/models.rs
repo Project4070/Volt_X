@@ -24,7 +24,7 @@ pub struct ThinkRequest {
 /// # Example
 ///
 /// ```
-/// use volt_server::models::{ThinkResponse, SlotState, TimingMs};
+/// use volt_server::models::{ThinkResponse, SlotState, ProofStepResponse, TimingMs};
 ///
 /// let resp = ThinkResponse {
 ///     text: "cat sat mat.".into(),
@@ -39,6 +39,14 @@ pub struct ThinkRequest {
 ///         source: "Translator".into(),
 ///         resolution_count: 1,
 ///     }],
+///     proof_steps: vec![ProofStepResponse {
+///         strand_name: "certainty_engine".into(),
+///         description: "min-rule propagation".into(),
+///         similarity: 1.0,
+///         gamma_after: 0.8,
+///         activated: true,
+///     }],
+///     safety_score: 0.0,
 ///     timing_ms: TimingMs { encode_ms: 0.1, decode_ms: 0.05, total_ms: 0.15 },
 /// };
 /// let json = serde_json::to_string(&resp).unwrap();
@@ -50,14 +58,49 @@ pub struct ThinkResponse {
     pub text: String,
     /// Per-slot certainty (gamma) values for active slots.
     pub gamma: Vec<f32>,
-    /// The strand ID (always 0 for stub).
+    /// The strand ID.
     pub strand_id: u64,
-    /// Number of RAR iterations (always 1 for stub).
+    /// Number of RAR iterations performed by the Soft Core.
     pub iterations: u32,
     /// Per-slot debug state for all active slots.
     pub slot_states: Vec<SlotState>,
+    /// Proof chain steps from the Hard Core pipeline.
+    pub proof_steps: Vec<ProofStepResponse>,
+    /// Pre-check safety score (0.0 = safe, higher = more violations).
+    pub safety_score: f32,
     /// Timing breakdown in milliseconds.
     pub timing_ms: TimingMs,
+}
+
+/// A single step from the Hard Core proof chain.
+///
+/// # Example
+///
+/// ```
+/// use volt_server::models::ProofStepResponse;
+///
+/// let step = ProofStepResponse {
+///     strand_name: "math_engine".into(),
+///     description: "10 + 20 = 30".into(),
+///     similarity: 0.95,
+///     gamma_after: 0.8,
+///     activated: true,
+/// };
+/// let json = serde_json::to_string(&step).unwrap();
+/// assert!(json.contains("math_engine"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProofStepResponse {
+    /// Name of the strand that was evaluated.
+    pub strand_name: String,
+    /// Human-readable description of what the strand did.
+    pub description: String,
+    /// Cosine similarity that triggered routing to this strand.
+    pub similarity: f32,
+    /// Frame certainty (gamma) after this step completed.
+    pub gamma_after: f32,
+    /// Whether the strand actually activated and performed computation.
+    pub activated: bool,
 }
 
 /// Debug information for a single active slot in the TensorFrame.

@@ -19,6 +19,8 @@
 //! assert_eq!(chain.activated_count, 2);
 //! ```
 
+use serde::{Deserialize, Serialize};
+
 use crate::router::RoutingDecision;
 
 /// A single step in a proof chain.
@@ -40,7 +42,7 @@ use crate::router::RoutingDecision;
 /// };
 /// assert!(step.activated);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofStep {
     /// Name of the strand that was evaluated.
     pub strand_name: String,
@@ -72,7 +74,7 @@ pub struct ProofStep {
 /// };
 /// assert!(chain.is_empty());
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofChain {
     /// Ordered list of proof steps.
     pub steps: Vec<ProofStep>,

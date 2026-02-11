@@ -10,13 +10,14 @@ use axum::Json;
 
 use volt_bus::similarity_frames;
 use volt_core::slot::SlotSource;
-use volt_core::{SlotRole, MAX_SLOTS};
-use volt_hard::verify_stub;
-use volt_soft::process_stub;
+use volt_core::{SlotRole, VoltError, MAX_SLOTS};
 use volt_translate::decode::format_output;
 use volt_translate::Translator;
 
-use crate::models::{ErrorResponse, HealthResponse, SlotState, ThinkRequest, ThinkResponse, TimingMs};
+use crate::models::{
+    ErrorResponse, HealthResponse, ProofStepResponse, SlotState, ThinkRequest, ThinkResponse,
+    TimingMs,
+};
 use crate::state::AppState;
 
 /// `GET /health` — health check endpoint.
@@ -35,18 +36,33 @@ pub async fn health() -> impl IntoResponse {
     })
 }
 
-/// `POST /api/think` — process text through the full Phase 1 pipeline.
+/// Result of the CPU-heavy pipeline work, lightweight enough to
+/// return across a thread boundary to the async handler.
+struct PipelineOutput {
+    /// The verified frame (boxed to keep off the caller's stack).
+    frame: Box<volt_core::TensorFrame>,
+    /// RAR iteration count.
+    iterations: u32,
+    /// Proof steps extracted from the proof chain.
+    proof_steps: Vec<ProofStepResponse>,
+    /// Pre-check safety score.
+    safety_score: f32,
+}
+
+/// `POST /api/think` — process text through the full pipeline.
 ///
-/// Pipeline: `Encode -> Soft Core -> Hard Core -> Bus Check -> Decode`
+/// Pipeline: `Encode -> Soft Core (RAR) -> Safety + Hard Core -> Bus Check -> Decode`
 ///
 /// Accepts a JSON body with a `text` field, encodes it into a
-/// TensorFrame, routes it through the Soft Core and Hard Core stubs,
-/// verifies frame integrity via the Bus, then decodes back to text.
+/// TensorFrame, runs RAR inference (Soft Core), routes through the
+/// safety-wrapped Hard Core pipeline, verifies frame integrity via
+/// the Bus, then decodes back to text.
 ///
 /// # Errors
 ///
 /// - 400 Bad Request: empty text, input too large
 /// - 422 Unprocessable Entity: invalid JSON (handled by Axum)
+/// - 403 Forbidden: safety violation (Omega Veto triggered)
 pub async fn think(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ThinkRequest>,
@@ -65,19 +81,61 @@ pub async fn think(
     })?;
     let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
 
-    // Run CPU-heavy pipeline on a thread with adequate stack.
+    // Run the full CPU-heavy pipeline on a thread with adequate stack.
     // TensorFrame is ~65KB and the pipeline creates multiple copies,
-    // which can overflow the default async executor thread stack.
-    let pipeline_frame = output.frame.clone();
-    let verified_frame = std::thread::Builder::new()
-        .stack_size(4 * 1024 * 1024)
-        .spawn(move || -> Result<volt_core::TensorFrame, String> {
-            let processed = process_stub(&pipeline_frame)
-                .map_err(|e| format!("soft core processing failed: {e}"))?;
-            let verified = verify_stub(&processed)
-                .map_err(|e| format!("hard core verification failed: {e}"))?;
-            let _bus_similarity = similarity_frames(&pipeline_frame, &verified);
-            Ok(verified)
+    // so we need more than the default async executor thread stack.
+    let pipeline_frame = Box::new(output.frame.clone());
+    let pipeline_output = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || -> Result<PipelineOutput, (StatusCode, String)> {
+            // Soft Core: RAR inference loop
+            let rar_result = volt_soft::process_rar(&pipeline_frame).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("soft core RAR failed: {e}"),
+                )
+            })?;
+            let iterations = rar_result.iterations;
+
+            // Hard Core + Safety: safety-wrapped pipeline
+            let safety_result =
+                volt_safety::safe_process_full(&rar_result.frame).map_err(|e| match &e {
+                    VoltError::SafetyViolation { .. } => {
+                        (StatusCode::FORBIDDEN, format!("safety violation: {e}"))
+                    }
+                    _ => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("hard core pipeline failed: {e}"),
+                    ),
+                })?;
+
+            // Bus integrity check
+            let _bus_similarity = similarity_frames(&pipeline_frame, &safety_result.frame);
+
+            // Extract proof steps
+            let proof_steps: Vec<ProofStepResponse> = safety_result
+                .proof
+                .map(|chain| {
+                    chain
+                        .steps
+                        .into_iter()
+                        .map(|step| ProofStepResponse {
+                            strand_name: step.strand_name,
+                            description: step.description,
+                            similarity: step.similarity,
+                            gamma_after: step.gamma_after,
+                            activated: step.activated,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            Ok(PipelineOutput {
+                frame: Box::new(safety_result.frame),
+                iterations,
+                proof_steps,
+                safety_score: safety_result.pre_check_score,
+            })
         })
         .map_err(|e| {
             (
@@ -96,12 +154,9 @@ pub async fn think(
                 }),
             )
         })?
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: e }),
-            )
-        })?;
+        .map_err(|(status, msg)| (status, Json(ErrorResponse { error: msg })))?;
+
+    let verified_frame = pipeline_output.frame;
 
     // Extract gamma values from active slots
     let gamma: Vec<f32> = (0..MAX_SLOTS)
@@ -150,8 +205,10 @@ pub async fn think(
         text: decoded_text,
         gamma,
         strand_id: verified_frame.frame_meta.strand_id,
-        iterations: 1,
+        iterations: pipeline_output.iterations,
         slot_states,
+        proof_steps: pipeline_output.proof_steps,
+        safety_score: pipeline_output.safety_score,
         timing_ms: TimingMs {
             encode_ms,
             decode_ms,

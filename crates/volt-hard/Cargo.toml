@@ -11,6 +11,7 @@ sandbox = ["dep:wasmtime"]
 volt-core.workspace = true
 volt-bus.workspace = true
 thiserror.workspace = true
+serde.workspace = true
 wasmtime = { workspace = true, optional = true }
 
 [dev-dependencies]
