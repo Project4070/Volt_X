@@ -7,7 +7,7 @@ Add persistent memory so the system remembers across conversations. This is wher
 
 ---
 
-## Milestone 4.1: VoltDB Tier 0 + Tier 1 (Week 26-28)
+## Milestone 4.1: VoltDB Tier 0 + Tier 1 (Week 26-28) **[DONE]**
 
 **Crate:** `volt-db`
 

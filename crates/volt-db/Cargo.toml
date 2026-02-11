@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-volt-core.workspace = true
+volt-core = { workspace = true, features = ["serde"] }
 volt-bus.workspace = true
 thiserror.workspace = true
 serde.workspace = true
