@@ -57,7 +57,7 @@ Add persistent memory so the system remembers across conversations. This is wher
 
 ---
 
-## Milestone 4.3: Tier 2 + GC + Consolidation (Week 32-34)
+## Milestone 4.3: Tier 2 + GC + Consolidation (Week 32-34) **[DONE]**
 
 **Crate:** `volt-db` (extend)
 

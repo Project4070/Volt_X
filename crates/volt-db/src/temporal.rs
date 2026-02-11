@@ -128,6 +128,37 @@ impl TemporalIndex {
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
+
+    /// Removes a frame from the temporal index by its `frame_id`.
+    ///
+    /// Scans all timestamps to find and remove the entry. Used by GC
+    /// when tombstoning a frame.
+    ///
+    /// Returns `true` if the frame was found and removed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::temporal::TemporalIndex;
+    ///
+    /// let mut idx = TemporalIndex::new();
+    /// idx.insert(1000, 42);
+    /// assert_eq!(idx.len(), 1);
+    ///
+    /// assert!(idx.remove(42));
+    /// assert_eq!(idx.len(), 0);
+    /// assert!(!idx.remove(42)); // already removed
+    /// ```
+    pub fn remove(&mut self, frame_id: u64) -> bool {
+        for ids in self.index.values_mut() {
+            if let Some(pos) = ids.iter().position(|&id| id == frame_id) {
+                ids.remove(pos);
+                self.count -= 1;
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]

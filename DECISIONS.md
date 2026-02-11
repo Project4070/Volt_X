@@ -313,3 +313,51 @@ fundamental data structure), ghost frames as full TensorFrames passed to soft co
 (rejected: wastes memory and compute — only R₀ gist needed for cross-attention),
 single combined softmax over slots + ghosts (rejected: ghosts could dominate attention
 when the buffer is large; separate softmax with alpha blending gives explicit control).
+
+## ADR-023: T2 Storage Engine + GC + WAL Design (2026-02-11)
+
+**Decision:** Implement Tier 2 as an LSM-Tree with memtable + mmap'd sorted
+runs, WAL for crash recovery, and a 4-tier GC decay pipeline.
+
+**T2 LSM-Tree:** Frames are inserted into a BTreeMap memtable, flushed to
+binary sorted runs when the memtable exceeds 4MB. Sorted runs are mmap'd
+via `memmap2` for zero-copy reads. Each run has a Bloom filter in its header
+for fast negative checks. Compaction merges runs at the same level into the
+next level (max 4 runs per level, max 4 levels).
+
+**Frame compression:** 4-tier decay: Full (~64KB) → Compressed/R0+R1 (~8KB) →
+Gist/R0 only (~1KB) → Tombstone (32B). `CompressedFrame` and `GistFrame` use
+a custom binary codec instead of serde because serde doesn't support
+`[f32; 256]` arrays (max array size is 32). Tombstones use serde_json (small,
+no large arrays).
+
+**GC retention scoring:**
+`score = 0.40 * exp(-age_days/τ) + 0.35 * γ + 0.15 * ln(1+refs) + 0.10 * pinned_bonus`.
+Frames are immortal if: pinned, gamma >= 1.0, or is_wisdom. Decay thresholds
+are configurable (default: Full→Compressed at 0.7, Compressed→Gist at 0.4,
+Gist→Tombstone at 0.1). GC only demotes, never promotes.
+
+**WAL:** Per-strand append-only binary log files with CRC32 checksums
+(via `crc32fast`). On crash, valid entries are replayed; corrupt tail entries
+are skipped. WAL is checkpointed (truncated) after successful T2 flushes.
+
+**Consolidation:** Greedy union-find clustering over per-strand HNSW gists.
+Clusters above min_size (default 5) are merged into "wisdom frames" — summary
+frames with averaged R0 vectors and high certainty (default 0.95). Superseded
+frames get lower priority in future GC runs.
+
+**Concurrency:** `ConcurrentVoltStore` wraps `VoltStore` in `Arc<RwLock<_>>`.
+This satisfies the "10 readers + 1 writer" requirement with standard library
+primitives. Epoch-based concurrency (crossbeam) deferred to a future milestone
+if contention becomes a bottleneck.
+
+**New dependencies:** `memmap2 = "0.9"` (mmap'd sorted runs) and
+`crc32fast = "1.4"` (WAL + sorted run checksums). Both are small,
+well-maintained, no-unsafe pure Rust crates.
+
+**Alternatives considered:** `rkyv` for zero-copy deserialization (rejected:
+custom binary is simpler and sufficient for the 4 decay types), `crossbeam-epoch`
+for lock-free concurrent access (rejected: `RwLock` is simpler and sufficient
+for current workload), `sled` or `rocksdb` as the T2 backend (rejected:
+external dependency too heavy, custom LSM gives us control over the mmap +
+Bloom + compaction pipeline).

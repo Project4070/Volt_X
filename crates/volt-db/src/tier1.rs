@@ -230,6 +230,77 @@ impl StrandStore {
         self.strands.get(&strand_id).map(|v| v.len()).unwrap_or(0)
     }
 
+    /// Removes and returns a frame by its `frame_id`.
+    ///
+    /// Used by the GC pipeline to demote full frames from T1 to compressed
+    /// storage in T2. Returns `None` if the frame is not found.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::tier1::StrandStore;
+    /// use volt_core::TensorFrame;
+    ///
+    /// let mut store = StrandStore::new();
+    /// let mut frame = TensorFrame::new();
+    /// frame.frame_meta.strand_id = 1;
+    /// frame.frame_meta.frame_id = 42;
+    /// store.store(frame).unwrap();
+    ///
+    /// let removed = store.remove_frame(42);
+    /// assert!(removed.is_some());
+    /// assert_eq!(removed.unwrap().frame_meta.frame_id, 42);
+    /// assert_eq!(store.total_frame_count(), 0);
+    /// ```
+    pub fn remove_frame(&mut self, frame_id: u64) -> Option<Box<TensorFrame>> {
+        for frames in self.strands.values_mut() {
+            if let Some(pos) = frames
+                .iter()
+                .position(|f| f.frame_meta.frame_id == frame_id)
+            {
+                return Some(frames.remove(pos));
+            }
+        }
+        None
+    }
+
+    /// Returns the oldest frames across all strands, up to `n` frames.
+    ///
+    /// Frames are ordered by `created_at` timestamp. Used by VoltStore
+    /// to decide which T1 frames to demote to T2.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::tier1::StrandStore;
+    /// use volt_core::TensorFrame;
+    ///
+    /// let mut store = StrandStore::new();
+    /// for i in 0..5u64 {
+    ///     let mut f = TensorFrame::new();
+    ///     f.frame_meta.strand_id = 0;
+    ///     f.frame_meta.frame_id = i;
+    ///     f.frame_meta.created_at = i * 1000;
+    ///     store.store(f).unwrap();
+    /// }
+    ///
+    /// let oldest = store.oldest_frame_ids(3);
+    /// assert_eq!(oldest.len(), 3);
+    /// ```
+    pub fn oldest_frame_ids(&self, n: usize) -> Vec<u64> {
+        let mut all: Vec<(u64, u64)> = self
+            .strands
+            .values()
+            .flat_map(|frames| {
+                frames
+                    .iter()
+                    .map(|f| (f.frame_meta.created_at, f.frame_meta.frame_id))
+            })
+            .collect();
+        all.sort_unstable();
+        all.into_iter().take(n).map(|(_, id)| id).collect()
+    }
+
     /// Serializes the strand store to a JSON file on disk.
     ///
     /// # Errors

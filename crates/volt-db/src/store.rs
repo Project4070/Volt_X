@@ -1,34 +1,92 @@
-//! VoltStore — unified memory facade combining T0, T1, and indices.
+//! VoltStore — unified memory facade combining T0, T1, T2, and indices.
 //!
 //! VoltStore is the primary API for storing and retrieving TensorFrames.
-//! It manages the T0 working memory (ring buffer) and T1 strand storage,
-//! handles automatic eviction from T0 to T1, strand management, frame ID
-//! generation, persistence, HNSW semantic indexing, temporal indexing,
-//! and the Ghost Bleed Engine.
+//! It manages the T0 working memory (ring buffer), T1 strand storage,
+//! T2 disk archive (LSM-Tree), handles automatic eviction from T0 → T1 → T2,
+//! strand management, frame ID generation, persistence, HNSW semantic indexing,
+//! temporal indexing, Ghost Bleed Engine, WAL crash recovery, garbage collection,
+//! and frame consolidation.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 use volt_core::{TensorFrame, VoltError, SLOT_DIM};
 
+use crate::compressed::{compress, to_gist_frame, to_tombstone, DecayLevel, FrameEntry};
+use crate::consolidation::{ConsolidationConfig, ConsolidationEngine, ConsolidationResult};
+use crate::gc::{FrameGcMeta, GcConfig, GcEngine, GcResult};
 use crate::ghost::{BleedEngine, GhostBuffer};
-use crate::gist::extract_gist;
+use crate::gist::{extract_gist, FrameGist};
 use crate::hnsw_index::{HnswIndex, SimilarityResult};
 use crate::temporal::TemporalIndex;
 use crate::tier0::WorkingMemory;
 use crate::tier1::StrandStore;
+use crate::tier2::{T2Config, Tier2Store};
+use crate::wal::{WalEntry, WalManager, WalOp};
+
+/// Configuration for opening a disk-backed VoltStore.
+///
+/// # Example
+///
+/// ```no_run
+/// use volt_db::VoltStoreConfig;
+/// use std::path::PathBuf;
+///
+/// let config = VoltStoreConfig {
+///     data_dir: PathBuf::from("/tmp/voltdb"),
+///     ..VoltStoreConfig::default()
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub struct VoltStoreConfig {
+    /// Root data directory. T2 and WAL subdirectories are created beneath it.
+    pub data_dir: PathBuf,
+    /// Maximum frames in T1 before overflow to T2. Default: 1024.
+    pub t1_overflow_threshold: usize,
+    /// T2 storage configuration.
+    pub t2_config: T2Config,
+    /// GC configuration.
+    pub gc_config: GcConfig,
+    /// Consolidation configuration.
+    pub consolidation_config: ConsolidationConfig,
+}
+
+impl Default for VoltStoreConfig {
+    fn default() -> Self {
+        let data_dir = PathBuf::from("voltdb_data");
+        Self {
+            t2_config: T2Config {
+                data_dir: data_dir.join("t2"),
+                ..T2Config::default()
+            },
+            data_dir,
+            t1_overflow_threshold: 1024,
+            gc_config: GcConfig::default(),
+            consolidation_config: ConsolidationConfig::default(),
+        }
+    }
+}
 
 /// Unified memory facade combining T0 working memory, T1 strand storage,
-/// HNSW semantic index, temporal index, and Ghost Bleed Engine.
+/// T2 disk archive, HNSW semantic index, temporal index, Ghost Bleed Engine,
+/// WAL crash recovery, GC, and frame consolidation.
 ///
 /// # Frame Lifecycle
 ///
 /// 1. Caller stores a frame via [`VoltStore::store`]
 /// 2. Frame gets a unique `frame_id` and the active `strand_id`
-/// 3. Frame is placed in T0 (working memory)
-/// 4. If T0 is full, the oldest frame is evicted to T1 (strand storage)
-/// 5. R₀ gist is extracted and inserted into HNSW + temporal indices
-/// 6. The Bleed Engine refreshes the ghost buffer with similar historical gists
-/// 7. Retrieval searches T0 first, then T1
+/// 3. WAL logs the store operation (if disk-backed)
+/// 4. Frame is placed in T0 (working memory)
+/// 5. If T0 is full, the oldest frame is evicted to T1 (strand storage)
+/// 6. R₀ gist is extracted and inserted into HNSW + temporal indices
+/// 7. The Bleed Engine refreshes the ghost buffer with similar historical gists
+/// 8. If T1 exceeds threshold, oldest frames overflow to T2 (compressed)
+/// 9. GC periodically decays frames: Full → Compressed → Gist → Tombstone
+///
+/// # Memory-Only vs Disk-Backed
+///
+/// - [`VoltStore::new()`] creates a memory-only store (no T2, no WAL)
+/// - [`VoltStore::open()`] creates a disk-backed store with T2 and WAL
 ///
 /// # Example
 ///
@@ -47,11 +105,17 @@ use crate::tier1::StrandStore;
 pub struct VoltStore {
     t0: WorkingMemory,
     t1: StrandStore,
+    t2: Option<Tier2Store>,
+    wal: Option<WalManager>,
+    gc: GcEngine,
+    consolidation: ConsolidationEngine,
     active_strand: u64,
     next_id: u64,
     hnsw: HnswIndex,
     temporal: TemporalIndex,
     bleed: BleedEngine,
+    data_dir: Option<PathBuf>,
+    t1_overflow_threshold: usize,
 }
 
 impl std::fmt::Debug for VoltStore {
@@ -59,11 +123,13 @@ impl std::fmt::Debug for VoltStore {
         f.debug_struct("VoltStore")
             .field("t0_len", &self.t0.len())
             .field("t1_len", &self.t1.total_frame_count())
+            .field("t2_entries", &self.t2.as_ref().map(|t| t.total_entries()))
             .field("active_strand", &self.active_strand)
             .field("next_id", &self.next_id)
             .field("hnsw_entries", &self.hnsw.total_entries())
             .field("temporal_entries", &self.temporal.len())
             .field("ghost_count", &self.bleed.buffer().len())
+            .field("disk_backed", &self.data_dir.is_some())
             .finish()
     }
 }
@@ -75,8 +141,9 @@ impl Default for VoltStore {
 }
 
 impl VoltStore {
-    /// Creates a new VoltStore with empty T0 and T1.
+    /// Creates a new memory-only VoltStore with empty T0 and T1.
     ///
+    /// No T2 archive, no WAL. Use [`VoltStore::open`] for disk-backed mode.
     /// The default active strand is 0 (automatically created).
     ///
     /// # Example
@@ -93,12 +160,157 @@ impl VoltStore {
         Self {
             t0: WorkingMemory::new(),
             t1,
+            t2: None,
+            wal: None,
+            gc: GcEngine::with_defaults(),
+            consolidation: ConsolidationEngine::with_defaults(),
             active_strand: 0,
             next_id: 1,
             hnsw: HnswIndex::new(),
             temporal: TemporalIndex::new(),
             bleed: BleedEngine::new(),
+            data_dir: None,
+            t1_overflow_threshold: 1024,
         }
+    }
+
+    /// Opens a disk-backed VoltStore with T2 archive and WAL.
+    ///
+    /// Creates the data directory structure, opens T2 and WAL,
+    /// replays any WAL entries for crash recovery, and rebuilds
+    /// HNSW and temporal indices from T1 data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VoltError::StorageError`] if directory creation,
+    /// T2 open, WAL open, or WAL replay fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use volt_db::{VoltStore, VoltStoreConfig};
+    /// use std::path::PathBuf;
+    ///
+    /// let config = VoltStoreConfig {
+    ///     data_dir: PathBuf::from("/tmp/voltdb"),
+    ///     ..VoltStoreConfig::default()
+    /// };
+    /// let mut store = VoltStore::open(config).unwrap();
+    /// ```
+    pub fn open(config: VoltStoreConfig) -> Result<Self, VoltError> {
+        std::fs::create_dir_all(&config.data_dir).map_err(|e| VoltError::StorageError {
+            message: format!(
+                "failed to create data directory {}: {e}",
+                config.data_dir.display()
+            ),
+        })?;
+
+        // Open T2
+        let mut t2_config = config.t2_config.clone();
+        t2_config.data_dir = config.data_dir.join("t2");
+        let t2 = Tier2Store::open(t2_config)?;
+
+        // Open WAL
+        let wal_dir = config.data_dir.join("wal");
+        let wal = WalManager::open(&wal_dir)?;
+
+        // Load T1 if it exists
+        let t1_path = config.data_dir.join("t1_strands.json");
+        let mut t1 = if t1_path.exists() {
+            // Spawn a thread with a larger stack for serde on Windows
+            let t1_path_clone = t1_path.clone();
+            let handle = std::thread::Builder::new()
+                .stack_size(8 * 1024 * 1024)
+                .spawn(move || StrandStore::load(&t1_path_clone))
+                .map_err(|e| VoltError::StorageError {
+                    message: format!("failed to spawn T1 load thread: {e}"),
+                })?;
+            handle.join().map_err(|_| VoltError::StorageError {
+                message: "T1 load thread panicked".to_string(),
+            })??
+        } else {
+            let mut t1 = StrandStore::new();
+            t1.create_strand(0);
+            t1
+        };
+
+        // Ensure strand 0 exists
+        if !t1.has_strand(0) {
+            t1.create_strand(0);
+        }
+
+        // Find max frame ID across T1 and T2
+        let max_t1 = Self::find_max_frame_id(&t1);
+        let max_t2 = t2
+            .scan_all()
+            .iter()
+            .map(|e| e.frame_id())
+            .max()
+            .unwrap_or(0);
+        let max_id = max_t1.max(max_t2);
+
+        // Rebuild HNSW and temporal indices from T1
+        let mut hnsw = HnswIndex::new();
+        let mut temporal = TemporalIndex::new();
+        for strand_id in t1.list_strands() {
+            for frame in t1.get_by_strand(strand_id) {
+                if let Some(gist) = extract_gist(frame)? {
+                    hnsw.insert(&gist)?;
+                    temporal.insert(gist.created_at, gist.frame_id);
+                }
+            }
+        }
+
+        // Replay WAL for crash recovery
+        let wal_entries = wal.replay_all()?;
+        let mut recovered_count = 0u64;
+        for entries in wal_entries.values() {
+            for entry in entries {
+                if entry.op == WalOp::Store && !entry.payload.is_empty() {
+                    // Try to parse as a FrameEntry and recover to T1
+                    if let Ok(FrameEntry::Full(frame)) =
+                        FrameEntry::from_bytes(&entry.payload)
+                    {
+                        let fid = frame.frame_meta.frame_id;
+                        // Only recover if not already in T1
+                        if t1.get_by_id(fid).is_none() {
+                            if !t1.has_strand(frame.frame_meta.strand_id) {
+                                t1.create_strand(frame.frame_meta.strand_id);
+                            }
+                            if let Some(gist) = extract_gist(&frame)? {
+                                hnsw.insert(&gist)?;
+                                temporal.insert(gist.created_at, gist.frame_id);
+                            }
+                            t1.store(*frame)?;
+                            recovered_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update max_id with recovered frames
+        let final_max = if recovered_count > 0 {
+            Self::find_max_frame_id(&t1).max(max_id)
+        } else {
+            max_id
+        };
+
+        Ok(Self {
+            t0: WorkingMemory::new(),
+            t1,
+            t2: Some(t2),
+            wal: Some(wal),
+            gc: GcEngine::new(config.gc_config),
+            consolidation: ConsolidationEngine::new(config.consolidation_config),
+            active_strand: 0,
+            next_id: final_max + 1,
+            hnsw,
+            temporal,
+            bleed: BleedEngine::new(),
+            data_dir: Some(config.data_dir),
+            t1_overflow_threshold: config.t1_overflow_threshold,
+        })
     }
 
     /// Stores a frame, assigning it a unique frame ID and the active strand ID.
@@ -107,6 +319,9 @@ impl VoltStore {
     /// evicted to T1 automatically. The frame's R₀ gist (if present) is
     /// extracted and inserted into the HNSW and temporal indices, and the
     /// Bleed Engine refreshes the ghost buffer.
+    ///
+    /// In disk-backed mode, the frame is also WAL-logged and T1 overflow
+    /// to T2 is checked.
     ///
     /// Returns the assigned frame ID.
     ///
@@ -128,6 +343,23 @@ impl VoltStore {
         frame.frame_meta.frame_id = frame_id;
         frame.frame_meta.strand_id = self.active_strand;
 
+        // WAL log if disk-backed
+        // Build payload directly to avoid cloning 64KB TensorFrame on the stack
+        // (Windows default thread stack is 1MB; serde + clone can overflow).
+        if let Some(ref mut wal) = self.wal {
+            let mut payload = vec![DecayLevel::Full.tag()];
+            let json = serde_json::to_vec(&frame).map_err(|e| VoltError::StorageError {
+                message: format!("failed to serialize frame for WAL: {e}"),
+            })?;
+            payload.extend_from_slice(&json);
+            wal.log_entry(WalEntry {
+                frame_id,
+                strand_id: self.active_strand,
+                op: WalOp::Store,
+                payload,
+            })?;
+        }
+
         // Extract gist before storing (we need the frame reference)
         let gist = extract_gist(&frame)?;
 
@@ -142,10 +374,25 @@ impl VoltStore {
             self.bleed.on_new_frame(g, &self.hnsw)?;
         }
 
+        // T1 → T2 overflow check
+        if self.t2.is_some()
+            && self.t1.total_frame_count() > self.t1_overflow_threshold
+        {
+            self.maybe_overflow_t1_to_t2()?;
+        }
+
+        // T2 maintenance
+        if let Some(ref mut t2) = self.t2 {
+            t2.maybe_flush_and_compact()?;
+        }
+
         Ok(frame_id)
     }
 
-    /// Retrieves a frame by its `frame_id`, searching T0 first then T1.
+    /// Retrieves a frame by its `frame_id`, searching T0 first, then T1.
+    ///
+    /// Does **not** search T2 (compressed frames). Use [`get_entry_by_id`]
+    /// to search all tiers including compressed/gist forms.
     ///
     /// # Example
     ///
@@ -164,9 +411,44 @@ impl VoltStore {
             .or_else(|| self.t1.get_by_id(frame_id))
     }
 
+    /// Retrieves a frame entry at any decay level from T0, T1, or T2.
+    ///
+    /// Search order: T0 → T1 → T2 (memtable → sorted runs).
+    /// Returns `Full` for T0/T1 frames, or `Compressed`/`Gist`/`Tombstone`
+    /// for T2 frames.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    /// use volt_core::TensorFrame;
+    /// use volt_db::compressed::DecayLevel;
+    ///
+    /// let mut store = VoltStore::new();
+    /// let id = store.store(TensorFrame::new()).unwrap();
+    /// let entry = store.get_entry_by_id(id).unwrap();
+    /// assert_eq!(entry.decay_level(), DecayLevel::Full);
+    /// ```
+    pub fn get_entry_by_id(&self, frame_id: u64) -> Option<FrameEntry> {
+        // Check T0
+        if let Some(frame) = self.t0.get_by_id(frame_id) {
+            return Some(FrameEntry::Full(Box::new(frame.clone())));
+        }
+        // Check T1
+        if let Some(frame) = self.t1.get_by_id(frame_id) {
+            return Some(FrameEntry::Full(Box::new(frame.clone())));
+        }
+        // Check T2
+        if let Some(ref t2) = self.t2 {
+            return t2.get(frame_id);
+        }
+        None
+    }
+
     /// Returns all frames belonging to a strand, from both T0 and T1.
     ///
     /// Results are ordered: T1 frames first (oldest), then T0 frames.
+    /// Does not include T2 compressed frames.
     ///
     /// # Example
     ///
@@ -291,9 +573,21 @@ impl VoltStore {
         self.t1.total_frame_count()
     }
 
+    /// Returns the total number of entries in T2 archive.
+    pub fn t2_len(&self) -> usize {
+        self.t2.as_ref().map(|t| t.total_entries()).unwrap_or(0)
+    }
+
     /// Returns the total number of frames across T0 and T1.
     pub fn total_frame_count(&self) -> usize {
         self.t0.len() + self.t1.total_frame_count()
+    }
+
+    /// Returns the total number of entries across all tiers (T0 + T1 + T2).
+    pub fn total_entry_count(&self) -> usize {
+        self.t0.len()
+            + self.t1.total_frame_count()
+            + self.t2.as_ref().map(|t| t.total_entries()).unwrap_or(0)
     }
 
     /// Returns a reference to the T0 working memory.
@@ -427,6 +721,346 @@ impl VoltStore {
         self.temporal.len()
     }
 
+    // --- GC (Milestone 4.3) ---
+
+    /// Runs a garbage collection pass across T1 and T2.
+    ///
+    /// Evaluates retention scores for all frames and demotes those
+    /// below the configured thresholds:
+    /// - Full → Compressed: removes from T1, compresses, inserts to T2
+    /// - Compressed → Gist: converts in T2
+    /// - Gist → Tombstoned: updates T2
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VoltError::StorageError`] if T2 operations fail.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    ///
+    /// let mut store = VoltStore::new();
+    /// let result = store.run_gc().unwrap();
+    /// assert_eq!(result.frames_preserved, 0);
+    /// ```
+    pub fn run_gc(&mut self) -> Result<GcResult, VoltError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+
+        self.run_gc_at(now)
+    }
+
+    /// Runs GC with a specified timestamp (useful for testing).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VoltError::StorageError`] if T2 operations fail.
+    pub fn run_gc_at(&mut self, now: u64) -> Result<GcResult, VoltError> {
+        let mut result = GcResult::default();
+
+        // Collect metadata from T1 frames
+        let mut gc_metas: Vec<FrameGcMeta> = Vec::new();
+        for strand_id in self.t1.list_strands() {
+            for frame in self.t1.get_by_strand(strand_id) {
+                gc_metas.push(FrameGcMeta {
+                    frame_id: frame.frame_meta.frame_id,
+                    strand_id: frame.frame_meta.strand_id,
+                    created_at: frame.frame_meta.created_at,
+                    global_certainty: frame.frame_meta.global_certainty,
+                    current_level: DecayLevel::Full,
+                    reference_count: 0,
+                    is_pinned: self.gc.is_pinned(frame.frame_meta.frame_id),
+                    is_wisdom: false,
+                });
+            }
+        }
+
+        // Collect metadata from T2 entries
+        if let Some(ref t2) = self.t2 {
+            for entry in t2.scan_all() {
+                let fid = entry.frame_id();
+                gc_metas.push(FrameGcMeta {
+                    frame_id: fid,
+                    strand_id: entry.strand_id(),
+                    created_at: entry.created_at(),
+                    global_certainty: entry.global_certainty(),
+                    current_level: entry.decay_level(),
+                    reference_count: 0,
+                    is_pinned: self.gc.is_pinned(fid),
+                    is_wisdom: false,
+                });
+            }
+        }
+
+        // Evaluate
+        let demotions = self.gc.evaluate(&gc_metas, now);
+
+        // Apply demotions
+        for (frame_id, target_level) in demotions {
+            // Find current level
+            let current_level = gc_metas
+                .iter()
+                .find(|m| m.frame_id == frame_id)
+                .map(|m| m.current_level)
+                .unwrap_or(DecayLevel::Full);
+
+            match (current_level, target_level) {
+                (DecayLevel::Full, DecayLevel::Compressed) => {
+                    // Remove from T1, compress, insert to T2
+                    if let Some(frame) = self.t1.remove_frame(frame_id) {
+                        let compressed = compress(&frame);
+
+                        // WAL log
+                        if let Some(ref mut wal) = self.wal {
+                            let payload =
+                                FrameEntry::Compressed(compressed.clone()).to_bytes()?;
+                            wal.log_entry(WalEntry {
+                                frame_id,
+                                strand_id: frame.frame_meta.strand_id,
+                                op: WalOp::Compress,
+                                payload,
+                            })?;
+                        }
+
+                        if let Some(ref mut t2) = self.t2 {
+                            t2.insert(FrameEntry::Compressed(compressed))?;
+                        }
+
+                        // Update indices
+                        self.hnsw.mark_deleted(frame_id);
+                        self.temporal.remove(frame_id);
+                        result.frames_compressed += 1;
+                    }
+                }
+                (DecayLevel::Full, DecayLevel::Gist | DecayLevel::Tombstoned) => {
+                    // Full → skip to Gist or Tombstone (multi-step demotion)
+                    if let Some(frame) = self.t1.remove_frame(frame_id) {
+                        let compressed = compress(&frame);
+                        let gist_vector =
+                            extract_gist_vector_from_compressed(&compressed);
+                        let gist_frame = to_gist_frame(&compressed, gist_vector);
+
+                        if target_level == DecayLevel::Tombstoned {
+                            let ts = to_tombstone(
+                                frame_id,
+                                frame.frame_meta.strand_id,
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_micros() as u64)
+                                    .unwrap_or(0),
+                                None,
+                            );
+                            if let Some(ref mut t2) = self.t2 {
+                                t2.insert(FrameEntry::Tombstone(ts))?;
+                            }
+                            result.frames_tombstoned += 1;
+                        } else {
+                            if let Some(ref mut t2) = self.t2 {
+                                t2.insert(FrameEntry::Gist(gist_frame))?;
+                            }
+                            result.frames_gisted += 1;
+                        }
+
+                        self.hnsw.mark_deleted(frame_id);
+                        self.temporal.remove(frame_id);
+                    }
+                }
+                (DecayLevel::Compressed, DecayLevel::Gist) => {
+                    // Convert in T2
+                    if let Some(ref mut t2) = self.t2
+                        && let Some(FrameEntry::Compressed(ref c)) = t2.get(frame_id)
+                    {
+                        let gist_vector =
+                            extract_gist_vector_from_compressed(c);
+                        let gist_frame = to_gist_frame(c, gist_vector);
+                        t2.update(FrameEntry::Gist(gist_frame))?;
+                        result.frames_gisted += 1;
+                    }
+                }
+                (DecayLevel::Compressed, DecayLevel::Tombstoned) => {
+                    if let Some(ref mut t2) = self.t2
+                        && let Some(entry) = t2.get(frame_id)
+                    {
+                        let strand_id = entry.strand_id();
+                        let ts = to_tombstone(
+                            frame_id,
+                            strand_id,
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_micros() as u64)
+                                .unwrap_or(0),
+                            None,
+                        );
+                        t2.update(FrameEntry::Tombstone(ts))?;
+                        result.frames_tombstoned += 1;
+                    }
+                }
+                (DecayLevel::Gist, DecayLevel::Tombstoned) => {
+                    if let Some(ref mut t2) = self.t2
+                        && let Some(entry) = t2.get(frame_id)
+                    {
+                        let strand_id = entry.strand_id();
+                        let ts = to_tombstone(
+                            frame_id,
+                            strand_id,
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_micros() as u64)
+                                .unwrap_or(0),
+                            None,
+                        );
+                        t2.update(FrameEntry::Tombstone(ts))?;
+                        result.frames_tombstoned += 1;
+                    }
+                }
+                _ => {
+                    // No-op for same level or unexpected transitions
+                }
+            }
+        }
+
+        let total_actions =
+            result.frames_compressed + result.frames_gisted + result.frames_tombstoned;
+        result.frames_preserved = gc_metas.len().saturating_sub(total_actions);
+
+        Ok(result)
+    }
+
+    /// Consolidates a strand by finding clusters and creating wisdom frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VoltError::StorageError`] if wisdom frame storage fails.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    ///
+    /// let mut store = VoltStore::new();
+    /// let result = store.consolidate_strand(0).unwrap();
+    /// assert_eq!(result.clusters_found, 0);
+    /// ```
+    pub fn consolidate_strand(
+        &mut self,
+        strand_id: u64,
+    ) -> Result<ConsolidationResult, VoltError> {
+        // Collect gists for this strand from T1
+        let mut gists: Vec<FrameGist> = Vec::new();
+        for frame in self.t1.get_by_strand(strand_id) {
+            if let Some(gist) = extract_gist(frame)? {
+                gists.push(gist);
+            }
+        }
+
+        // Find clusters
+        let clusters = self.consolidation.find_clusters(strand_id, &self.hnsw, &gists);
+
+        if clusters.is_empty() {
+            return Ok(ConsolidationResult {
+                clusters_found: 0,
+                wisdom_frames: Vec::new(),
+                superseded_frame_ids: Vec::new(),
+            });
+        }
+
+        let mut wisdom_frames = Vec::new();
+        let mut superseded_ids = Vec::new();
+
+        for cluster in &clusters {
+            // Gather source frames for this cluster (clone to release borrow on self)
+            let source_frames: Vec<TensorFrame> = cluster
+                .member_frame_ids
+                .iter()
+                .filter_map(|&id| self.get_by_id(id).cloned())
+                .collect();
+
+            if source_frames.len() < self.consolidation.config().min_cluster_size {
+                continue;
+            }
+
+            // Assign an ID to the wisdom frame
+            let wisdom_id = self.next_id;
+            self.next_id += 1;
+
+            let source_refs: Vec<&TensorFrame> = source_frames.iter().collect();
+            let wisdom = self.consolidation.create_wisdom_frame(
+                cluster,
+                &source_refs,
+                strand_id,
+                wisdom_id,
+            );
+
+            // Store the wisdom frame
+            let gist = extract_gist(&wisdom)?;
+            if let Some(evicted) = self.t0.store(wisdom.clone()) {
+                self.t1.store(evicted)?;
+            }
+
+            if let Some(ref g) = gist {
+                self.hnsw.insert(g)?;
+                self.temporal.insert(g.created_at, wisdom_id);
+            }
+
+            superseded_ids.extend_from_slice(&cluster.member_frame_ids);
+            wisdom_frames.push(wisdom);
+        }
+
+        Ok(ConsolidationResult {
+            clusters_found: clusters.len(),
+            wisdom_frames,
+            superseded_frame_ids: superseded_ids,
+        })
+    }
+
+    /// Pins a frame so it is never garbage collected.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    /// use volt_core::TensorFrame;
+    ///
+    /// let mut store = VoltStore::new();
+    /// let id = store.store(TensorFrame::new()).unwrap();
+    /// store.pin_frame(id);
+    /// assert!(store.is_frame_pinned(id));
+    /// ```
+    pub fn pin_frame(&mut self, frame_id: u64) {
+        self.gc.pin_frame(frame_id);
+    }
+
+    /// Unpins a frame, making it eligible for GC.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    /// use volt_core::TensorFrame;
+    ///
+    /// let mut store = VoltStore::new();
+    /// let id = store.store(TensorFrame::new()).unwrap();
+    /// store.pin_frame(id);
+    /// store.unpin_frame(id);
+    /// assert!(!store.is_frame_pinned(id));
+    /// ```
+    pub fn unpin_frame(&mut self, frame_id: u64) {
+        self.gc.unpin_frame(frame_id);
+    }
+
+    /// Checks whether a frame is pinned.
+    pub fn is_frame_pinned(&self, frame_id: u64) -> bool {
+        self.gc.is_pinned(frame_id)
+    }
+
+    /// Returns whether the store is disk-backed (has T2 and WAL).
+    pub fn is_disk_backed(&self) -> bool {
+        self.data_dir.is_some()
+    }
+
     // --- Persistence ---
 
     /// Saves T1 strand storage to disk for persistence across restarts.
@@ -493,11 +1127,17 @@ impl VoltStore {
         Ok(Self {
             t0: WorkingMemory::new(),
             t1,
+            t2: None,
+            wal: None,
+            gc: GcEngine::with_defaults(),
+            consolidation: ConsolidationEngine::with_defaults(),
             active_strand: 0,
             next_id: max_id + 1,
             hnsw,
             temporal,
             bleed: BleedEngine::new(),
+            data_dir: None,
+            t1_overflow_threshold: 1024,
         })
     }
 
@@ -512,6 +1152,153 @@ impl VoltStore {
             }
         }
         max
+    }
+
+    /// Overflows the oldest T1 frames to T2 (compressed).
+    fn maybe_overflow_t1_to_t2(&mut self) -> Result<(), VoltError> {
+        let overflow_count = self
+            .t1
+            .total_frame_count()
+            .saturating_sub(self.t1_overflow_threshold);
+
+        if overflow_count == 0 {
+            return Ok(());
+        }
+
+        // Get oldest frame IDs
+        let oldest_ids = self.t1.oldest_frame_ids(overflow_count);
+
+        for frame_id in oldest_ids {
+            if let Some(frame) = self.t1.remove_frame(frame_id) {
+                let compressed = compress(&frame);
+
+                // WAL log if enabled
+                if let Some(ref mut wal) = self.wal {
+                    let payload =
+                        FrameEntry::Compressed(compressed.clone()).to_bytes()?;
+                    wal.log_entry(WalEntry {
+                        frame_id,
+                        strand_id: frame.frame_meta.strand_id,
+                        op: WalOp::Compress,
+                        payload,
+                    })?;
+                }
+
+                if let Some(ref mut t2) = self.t2 {
+                    t2.insert(FrameEntry::Compressed(compressed))?;
+                }
+
+                // Mark deleted in HNSW (frame is no longer in Full form)
+                self.hnsw.mark_deleted(frame_id);
+                self.temporal.remove(frame_id);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Extracts a gist vector from a CompressedFrame by averaging R₀ slots.
+fn extract_gist_vector_from_compressed(
+    compressed: &crate::compressed::CompressedFrame,
+) -> [f32; SLOT_DIM] {
+    let mut sum = [0.0f32; SLOT_DIM];
+    let mut count = 0u32;
+
+    for s in compressed.slots.iter().flatten() {
+        if let Some(r0) = &s.r0 {
+            for (d, &v) in sum.iter_mut().zip(r0.iter()) {
+                *d += v;
+            }
+            count += 1;
+        }
+    }
+
+    if count > 0 {
+        let n = count as f32;
+        for d in &mut sum {
+            *d /= n;
+        }
+        // L2 normalize
+        let norm: f32 = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-10 {
+            for d in &mut sum {
+                *d /= norm;
+            }
+        }
+    }
+
+    sum
+}
+
+/// Thread-safe concurrent wrapper around VoltStore.
+///
+/// Wraps `VoltStore` in `Arc<RwLock<_>>` for concurrent access.
+/// Provides read/write access patterns for the "10 readers + 1 writer" use case.
+///
+/// # Example
+///
+/// ```
+/// use volt_db::{VoltStore, ConcurrentVoltStore};
+///
+/// let store = VoltStore::new();
+/// let concurrent = ConcurrentVoltStore::new(store);
+///
+/// // Read access (many concurrent readers)
+/// let guard = concurrent.read().unwrap();
+/// assert_eq!(guard.active_strand(), 0);
+/// ```
+#[derive(Debug, Clone)]
+pub struct ConcurrentVoltStore {
+    inner: Arc<RwLock<VoltStore>>,
+}
+
+impl ConcurrentVoltStore {
+    /// Creates a new concurrent store from an existing VoltStore.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::{VoltStore, ConcurrentVoltStore};
+    ///
+    /// let store = VoltStore::new();
+    /// let concurrent = ConcurrentVoltStore::new(store);
+    /// ```
+    pub fn new(store: VoltStore) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(store)),
+        }
+    }
+
+    /// Acquires a read lock on the store.
+    ///
+    /// Multiple readers can hold read locks simultaneously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lock is poisoned.
+    pub fn read(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, VoltStore>, VoltError> {
+        self.inner.read().map_err(|e| VoltError::StorageError {
+            message: format!("VoltStore read lock poisoned: {e}"),
+        })
+    }
+
+    /// Acquires a write lock on the store.
+    ///
+    /// Only one writer can hold the lock at a time, and it
+    /// excludes all readers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lock is poisoned.
+    pub fn write(
+        &self,
+    ) -> Result<std::sync::RwLockWriteGuard<'_, VoltStore>, VoltError> {
+        self.inner.write().map_err(|e| VoltError::StorageError {
+            message: format!("VoltStore write lock poisoned: {e}"),
+        })
     }
 }
 
@@ -819,5 +1606,145 @@ mod tests {
         for g in &gists {
             assert_eq!(g.len(), SLOT_DIM);
         }
+    }
+
+    // --- Milestone 4.3 specific tests ---
+
+    #[test]
+    fn new_store_is_memory_only() {
+        let store = VoltStore::new();
+        assert!(!store.is_disk_backed());
+        assert_eq!(store.t2_len(), 0);
+    }
+
+    #[test]
+    fn get_entry_by_id_returns_full() {
+        let mut store = VoltStore::new();
+        let id = store.store(make_frame_with_content()).unwrap();
+        let entry = store.get_entry_by_id(id).unwrap();
+        assert_eq!(entry.decay_level(), DecayLevel::Full);
+        assert_eq!(entry.frame_id(), id);
+    }
+
+    #[test]
+    fn pin_unpin_frame() {
+        let mut store = VoltStore::new();
+        let id = store.store(TensorFrame::new()).unwrap();
+
+        assert!(!store.is_frame_pinned(id));
+        store.pin_frame(id);
+        assert!(store.is_frame_pinned(id));
+        store.unpin_frame(id);
+        assert!(!store.is_frame_pinned(id));
+    }
+
+    #[test]
+    fn gc_on_empty_store() {
+        let mut store = VoltStore::new();
+        let result = store.run_gc().unwrap();
+        assert_eq!(result.frames_preserved, 0);
+        assert_eq!(result.frames_compressed, 0);
+        assert_eq!(result.frames_gisted, 0);
+        assert_eq!(result.frames_tombstoned, 0);
+    }
+
+    #[test]
+    fn consolidate_empty_strand() {
+        let mut store = VoltStore::new();
+        let result = store.consolidate_strand(0).unwrap();
+        assert_eq!(result.clusters_found, 0);
+        assert!(result.wisdom_frames.is_empty());
+    }
+
+    #[test]
+    fn concurrent_store_read_write() {
+        let store = VoltStore::new();
+        let concurrent = ConcurrentVoltStore::new(store);
+
+        // Write
+        {
+            let mut guard = concurrent.write().unwrap();
+            guard.store(make_frame_with_content()).unwrap();
+        }
+
+        // Read
+        {
+            let guard = concurrent.read().unwrap();
+            assert!(guard.get_by_id(1).is_some());
+            assert_eq!(guard.total_frame_count(), 1);
+        }
+    }
+
+    #[test]
+    fn concurrent_multi_reader() {
+        let store = VoltStore::new();
+        let concurrent = ConcurrentVoltStore::new(store);
+
+        // Multiple readers at the same time
+        let r1 = concurrent.read().unwrap();
+        let r2 = concurrent.read().unwrap();
+        assert_eq!(r1.active_strand(), r2.active_strand());
+        drop(r1);
+        drop(r2);
+    }
+
+    #[test]
+    fn disk_backed_store_roundtrip() {
+        // Run on a thread with 8MB stack — TensorFrame is 64KB and
+        // serde_json + WAL serialization can overflow Windows' 1MB default.
+        std::thread::Builder::new()
+            .name("disk_backed_test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let dir = std::env::temp_dir()
+                    .join("volt_store_disk_test")
+                    .join(format!("{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&dir);
+
+                let config = VoltStoreConfig {
+                    data_dir: dir.clone(),
+                    t1_overflow_threshold: 1024,
+                    t2_config: T2Config {
+                        data_dir: dir.join("t2"),
+                        ..T2Config::default()
+                    },
+                    ..VoltStoreConfig::default()
+                };
+
+                {
+                    let mut store = VoltStore::open(config.clone()).unwrap();
+                    assert!(store.is_disk_backed());
+
+                    for _ in 0..10 {
+                        store.store(make_frame_with_content()).unwrap();
+                    }
+
+                    // Save T1 for persistence
+                    let t1_path = dir.join("t1_strands.json");
+                    store.save(&t1_path).unwrap();
+                }
+
+                // Reopen
+                {
+                    let store = VoltStore::open(config).unwrap();
+                    // T0 is empty after reopen, but T1 frames should be loaded
+                    // (depending on what was evicted to T1 before save)
+                    assert!(store.is_disk_backed());
+                }
+
+                let _ = std::fs::remove_dir_all(&dir);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn total_entry_count_includes_t0_t1() {
+        let mut store = VoltStore::new();
+        for _ in 0..(T0_CAPACITY + 10) {
+            store.store(make_frame_with_content()).unwrap();
+        }
+        assert_eq!(store.total_entry_count(), T0_CAPACITY + 10);
     }
 }

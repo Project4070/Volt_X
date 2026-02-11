@@ -42,6 +42,8 @@ candle-transformers = "0.8"
 tokenizers = "0.20"
 serde_plain = "1"
 wasmtime = "29"
+memmap2 = "0.9"
+crc32fast = "1.4"
 
 # Internal crate dependencies
 volt-core = { path = "crates/volt-core" }

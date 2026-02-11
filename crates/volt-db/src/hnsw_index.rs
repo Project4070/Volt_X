@@ -7,7 +7,7 @@
 //! The HNSW index is rebuilt from stored gists on load (not serialized),
 //! matching the pattern from [`volt_bus::codebook::Codebook`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hnsw_rs::prelude::*;
 use volt_core::{VoltError, SLOT_DIM};
@@ -232,6 +232,9 @@ impl StrandHnsw {
 /// ```
 pub struct HnswIndex {
     strands: HashMap<u64, StrandHnsw>,
+    /// Frame IDs that have been soft-deleted (tombstoned by GC).
+    /// Query results filter these out. Cleared on index rebuild (load).
+    deleted: HashSet<u64>,
 }
 
 impl std::fmt::Debug for HnswIndex {
@@ -265,6 +268,7 @@ impl HnswIndex {
     pub fn new() -> Self {
         Self {
             strands: HashMap::new(),
+            deleted: HashSet::new(),
         }
     }
 
@@ -334,7 +338,20 @@ impl HnswIndex {
         k: usize,
     ) -> Vec<SimilarityResult> {
         match self.strands.get(&strand_id) {
-            Some(strand_index) => strand_index.query(query, k),
+            Some(strand_index) => {
+                if self.deleted.is_empty() {
+                    strand_index.query(query, k)
+                } else {
+                    // Over-fetch to compensate for filtered-out deleted entries
+                    let fetch_k = k + self.deleted.len();
+                    strand_index
+                        .query(query, fetch_k)
+                        .into_iter()
+                        .filter(|r| !self.deleted.contains(&r.frame_id))
+                        .take(k)
+                        .collect()
+                }
+            }
             None => Vec::new(),
         }
     }
@@ -375,10 +392,17 @@ impl HnswIndex {
             return Vec::new();
         }
 
+        let fetch_k = if self.deleted.is_empty() {
+            k
+        } else {
+            k + self.deleted.len()
+        };
+
         let mut all_results: Vec<SimilarityResult> = self
             .strands
             .values()
-            .flat_map(|strand_index| strand_index.query(query, k))
+            .flat_map(|strand_index| strand_index.query(query, fetch_k))
+            .filter(|r| !self.deleted.contains(&r.frame_id))
             .collect();
 
         // Sort by ascending distance (closest first)
@@ -392,9 +416,49 @@ impl HnswIndex {
         self.strands.keys().copied().collect()
     }
 
-    /// Returns the total number of indexed gists across all strands.
+    /// Returns the total number of indexed gists across all strands
+    /// (excluding soft-deleted entries).
     pub fn total_entries(&self) -> usize {
-        self.strands.values().map(|s| s.len()).sum()
+        let raw: usize = self.strands.values().map(|s| s.len()).sum();
+        raw.saturating_sub(self.deleted.len())
+    }
+
+    /// Marks a frame as soft-deleted in the HNSW index.
+    ///
+    /// Deleted frames are filtered out of query results. The actual HNSW
+    /// graph entries remain but are invisible to callers. On index rebuild
+    /// (during load), deleted entries are simply not re-inserted.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::hnsw_index::HnswIndex;
+    /// use volt_db::gist::FrameGist;
+    /// use volt_core::SLOT_DIM;
+    ///
+    /// let mut index = HnswIndex::new();
+    /// let gist = FrameGist {
+    ///     vector: [0.1; SLOT_DIM],
+    ///     frame_id: 1,
+    ///     strand_id: 0,
+    ///     created_at: 0,
+    /// };
+    /// index.insert(&gist).unwrap();
+    /// assert_eq!(index.total_entries(), 1);
+    ///
+    /// index.mark_deleted(1);
+    /// assert_eq!(index.total_entries(), 0);
+    ///
+    /// let results = index.query_strand(0, &[0.1; SLOT_DIM], 5);
+    /// assert!(results.is_empty());
+    /// ```
+    pub fn mark_deleted(&mut self, frame_id: u64) {
+        self.deleted.insert(frame_id);
+    }
+
+    /// Returns true if a frame ID is soft-deleted.
+    pub fn is_deleted(&self, frame_id: u64) -> bool {
+        self.deleted.contains(&frame_id)
     }
 }
 
