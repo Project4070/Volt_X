@@ -111,6 +111,20 @@ impl Linear {
     pub(crate) fn bias(&self) -> &[f32] {
         &self.bias
     }
+
+    /// Returns a mutable reference to the weight matrix.
+    ///
+    /// Used by Forward-Forward training to apply layer-local weight updates.
+    pub(crate) fn weights_mut(&mut self) -> &mut [f32] {
+        &mut self.weights
+    }
+
+    /// Returns a mutable reference to the bias vector.
+    ///
+    /// Used by Forward-Forward training to apply layer-local bias updates.
+    pub(crate) fn bias_mut(&mut self) -> &mut [f32] {
+        &mut self.bias
+    }
 }
 
 #[cfg(test)]

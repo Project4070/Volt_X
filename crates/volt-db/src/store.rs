@@ -1061,6 +1061,77 @@ impl VoltStore {
         self.data_dir.is_some()
     }
 
+    /// Reassigns a frame from its current strand to a new strand.
+    ///
+    /// Removes the frame from T1, updates its `strand_id`, and stores
+    /// it back. Also updates the HNSW index so the gist moves to the
+    /// new strand's partition. The target strand is created if it does
+    /// not exist.
+    ///
+    /// Only operates on T1 frames. T0 frames are ephemeral and should
+    /// not be reassigned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VoltError::StorageError`] if the frame is not found in T1,
+    /// or if re-insertion fails.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::VoltStore;
+    /// use volt_core::TensorFrame;
+    ///
+    /// let mut store = VoltStore::new();
+    /// store.create_strand(1).unwrap();
+    /// store.switch_strand(1).unwrap();
+    ///
+    /// // Fill T0 so frames overflow to T1
+    /// let mut target_id = 0;
+    /// for _ in 0..65 {
+    ///     target_id = store.store(TensorFrame::new()).unwrap();
+    /// }
+    ///
+    /// store.create_strand(2).unwrap();
+    /// // The first frame should now be in T1
+    /// let first_t1 = store.get_by_strand(1).first()
+    ///     .map(|f| f.frame_meta.frame_id).unwrap();
+    /// store.reassign_frame_strand(first_t1, 2).unwrap();
+    /// ```
+    pub fn reassign_frame_strand(
+        &mut self,
+        frame_id: u64,
+        new_strand_id: u64,
+    ) -> Result<(), VoltError> {
+        // Remove from T1
+        let mut frame = self.t1.remove_frame(frame_id).ok_or_else(|| {
+            VoltError::StorageError {
+                message: format!(
+                    "reassign_frame_strand: frame {frame_id} not found in T1"
+                ),
+            }
+        })?;
+
+        // Update strand_id on the frame
+        frame.frame_meta.strand_id = new_strand_id;
+
+        // Ensure target strand exists
+        if !self.t1.has_strand(new_strand_id) {
+            self.t1.create_strand(new_strand_id);
+        }
+
+        // Remove old gist from HNSW and re-insert with new strand
+        self.hnsw.mark_deleted(frame_id);
+        if let Some(gist) = extract_gist(&frame)? {
+            self.hnsw.insert(&gist)?;
+        }
+
+        // Store back in T1
+        self.t1.store(*frame)?;
+
+        Ok(())
+    }
+
     // --- Persistence ---
 
     /// Saves T1 strand storage to disk for persistence across restarts.

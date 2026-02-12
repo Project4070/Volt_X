@@ -393,3 +393,37 @@ per-domain pattern (ADR-003).
 WAL is optimized for frame crash recovery, not analytics events), ring
 buffer (rejected: complicates drain/index semantics), incremental statistics
 (rejected: adds complexity for minimal gain at expected buffer sizes).
+
+## ADR-025: Sleep Consolidation Architecture (2026-02-12)
+
+**Decision:** Sleep consolidation is orchestrated by `SleepScheduler` in
+`volt-learn`, which runs a multi-phase cycle: frame distillation → Forward-Forward
+VFN training → strand graduation → garbage collection. The scheduler supports
+both manual triggering and automatic background polling (idle > 10 minutes).
+
+**Forward-Forward training:** Implemented as a CPU-only per-layer goodness
+optimization on `Vfn`. Each layer is trained independently — positive samples
+(high-gamma verified frames) push goodness above a threshold, negative samples
+(low-gamma + corrupted frames) push goodness below. No backpropagation — gradients
+never flow between layers. This keeps VRAM/memory usage at ~1x inference. New
+public API on `Vfn`: `forward_layer()`, `update_layer()`, `layer_shape()`. New
+`pub(crate)` methods on `nn::Linear`: `weights_mut()`, `bias_mut()`.
+
+**Frame distillation:** Delegates to existing `VoltStore::consolidate_strand()` from
+Milestone 4.3 (HNSW clustering + wisdom frame creation). Thin wrapper in
+`volt-learn::distillation` iterates all strands.
+
+**Strand graduation:** Analyzes learning events to find clusters of frames within
+a strand that are dissimilar to the strand's centroid. If a cluster exceeds 50 frames,
+creates a new strand and migrates frames via `VoltStore::reassign_frame_strand()`.
+
+**Background thread:** `SleepScheduler::spawn_background()` spawns a thread with
+4 MB stack that polls at configurable intervals. Locks are acquired in fixed order
+(logger → store → vfn) to prevent deadlocks. Main thread remains responsive via
+`RwLock` sharing.
+
+**Alternatives considered:** GPU-based Forward-Forward via candle (rejected: adds
+GPU dependency to volt-learn, violates architecture rules), async scheduler with
+tokio (rejected: CLAUDE.md forbids async in volt-learn), single-layer VFN update
+without per-layer API (rejected: can't implement true Forward-Forward without
+layer-local forward passes).

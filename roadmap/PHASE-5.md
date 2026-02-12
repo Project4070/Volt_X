@@ -26,7 +26,7 @@ Activate the self-improvement loop. The system should get measurably better over
 
 ---
 
-## Milestone 5.2: Sleep Consolidation (Week 37-39)
+## Milestone 5.2: Sleep Consolidation (Week 37-39) ✅ COMPLETE
 
 **Crate:** `volt-learn` (extend)
 
