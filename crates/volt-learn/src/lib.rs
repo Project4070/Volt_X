@@ -16,6 +16,14 @@
 //! - [`graduation`] — Strand graduation (novel topics → new strands)
 //! - [`sleep`] — Sleep scheduler (idle detection, orchestration)
 //!
+//! ## Milestone 5.3: RLVF Joint Alignment
+//!
+//! - [`eval_dataset`] — 1000 evaluation (question, answer) pairs
+//! - [`reward`] — Reward computation from correctness + gamma calibration
+//! - [`calibration`] — Expected Calibration Error (ECE) metric
+//! - [`self_play`] — Logic puzzle generation and grading
+//! - [`rlvf`] — REINFORCE with baseline training loop
+//!
 //! ## Three Timescales of Learning
 //!
 //! - **Instant Learning** (ms–min): Strand vector updates in RAM, no GPU needed
@@ -55,4 +63,16 @@ pub use sleep::{SleepConfig, SleepScheduler, SleepHandle, SleepCycleResult};
 
 pub use volt_core;
 
-// TODO(5.3): Implement RLVF joint alignment
+// Milestone 5.3: RLVF Joint Alignment
+pub mod eval_dataset;
+pub mod reward;
+pub mod calibration;
+pub mod self_play;
+pub mod rlvf;
+
+// 5.3 re-exports
+pub use eval_dataset::{EvalCategory, EvalPair, generate_eval_dataset};
+pub use reward::{RewardConfig, RewardOutcome, compute_reward};
+pub use calibration::{CalibrationBin, CalibrationResult, compute_calibration};
+pub use self_play::{PuzzleType, LogicPuzzle, PuzzleResult, generate_puzzles, grade_puzzle};
+pub use rlvf::{RlvfConfig, RlvfResult, train_rlvf};

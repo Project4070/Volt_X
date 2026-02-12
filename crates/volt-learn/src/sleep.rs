@@ -32,11 +32,14 @@ use std::time::{Duration, Instant};
 use volt_core::VoltError;
 use volt_db::VoltStore;
 use volt_soft::vfn::Vfn;
+use volt_translate::StubTranslator;
 
 use crate::distillation::{self, DistillationConfig, DistillationResult};
+use crate::eval_dataset;
 use crate::forward_forward::{self, FfConfig, FfResult};
 use crate::graduation::{self, GraduationConfig, GraduationResult};
 use crate::logger::EventLogger;
+use crate::rlvf::{self, RlvfConfig, RlvfResult};
 
 /// Configuration for the sleep scheduler.
 ///
@@ -61,6 +64,12 @@ pub struct SleepConfig {
     pub distillation_config: DistillationConfig,
     /// Strand graduation configuration.
     pub graduation_config: GraduationConfig,
+    /// RLVF training configuration. `None` disables RLVF during sleep.
+    /// Default: `None` (opt-in, since RLVF is more expensive than FF).
+    pub rlvf_config: Option<RlvfConfig>,
+    /// Minimum accumulated learning events before RLVF triggers.
+    /// Default: 100.
+    pub rlvf_min_events: usize,
 }
 
 impl Default for SleepConfig {
@@ -71,6 +80,8 @@ impl Default for SleepConfig {
             ff_config: FfConfig::default(),
             distillation_config: DistillationConfig::default(),
             graduation_config: GraduationConfig::default(),
+            rlvf_config: None,
+            rlvf_min_events: 100,
         }
     }
 }
@@ -87,6 +98,7 @@ impl Default for SleepConfig {
 /// let result = SleepCycleResult {
 ///     distillation: vec![],
 ///     ff_training: None,
+///     rlvf_training: None,
 ///     graduation: GraduationResult {
 ///         new_strands_created: vec![],
 ///         frames_migrated: 0,
@@ -102,6 +114,8 @@ pub struct SleepCycleResult {
     pub distillation: Vec<DistillationResult>,
     /// Forward-Forward training result (None if no samples).
     pub ff_training: Option<FfResult>,
+    /// RLVF training result (None if disabled or insufficient events).
+    pub rlvf_training: Option<RlvfResult>,
     /// Strand graduation result.
     pub graduation: GraduationResult,
     /// Number of frames decayed by GC.
@@ -326,6 +340,17 @@ impl SleepScheduler {
             None
         };
 
+        // Phase 4.5: RLVF training (if configured and enough events)
+        let rlvf_result = if let Some(ref rlvf_config) = self.config.rlvf_config
+            && events.len() >= self.config.rlvf_min_events
+        {
+            let translator = StubTranslator::new();
+            let dataset = eval_dataset::generate_eval_dataset();
+            rlvf::train_rlvf(vfn, &dataset, &translator, rlvf_config).ok()
+        } else {
+            None
+        };
+
         // Phase 5: Strand graduation
         let graduation_result = graduation::check_graduation(
             store,
@@ -339,6 +364,7 @@ impl SleepScheduler {
         Ok(SleepCycleResult {
             distillation: distillation_results,
             ff_training: ff_result,
+            rlvf_training: rlvf_result,
             graduation: graduation_result,
             gc_frames_decayed: gc_result.frames_compressed
                 + gc_result.frames_gisted
@@ -390,6 +416,8 @@ impl SleepScheduler {
     ) -> Result<SleepHandle, VoltError> {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_clone = Arc::clone(&stop_flag);
+        let activity_flag = Arc::new(AtomicBool::new(false));
+        let activity_clone = Arc::clone(&activity_flag);
         let poll_interval = config.poll_interval;
 
         let thread = std::thread::Builder::new()
@@ -403,6 +431,11 @@ impl SleepScheduler {
 
                     if stop_clone.load(Ordering::Relaxed) {
                         break;
+                    }
+
+                    // Check external activity signal from the server
+                    if activity_clone.swap(false, Ordering::Relaxed) {
+                        scheduler.touch();
                     }
 
                     if !scheduler.should_sleep() {
@@ -438,6 +471,7 @@ impl SleepScheduler {
 
         Ok(SleepHandle {
             stop_flag,
+            activity_flag,
             thread: Some(thread),
         })
     }
@@ -470,6 +504,7 @@ impl SleepScheduler {
 /// ```
 pub struct SleepHandle {
     stop_flag: Arc<AtomicBool>,
+    activity_flag: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -497,6 +532,24 @@ impl SleepHandle {
     /// ```
     pub fn stop(&self) {
         self.stop_flag.store(true, Ordering::Relaxed);
+    }
+
+    /// Notifies the scheduler that user activity occurred.
+    ///
+    /// Resets the idle timer so that sleep consolidation does not
+    /// trigger while the user is actively sending requests. The
+    /// background thread picks this up on its next poll cycle.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use volt_learn::sleep::SleepHandle;
+    /// # fn example(handle: &SleepHandle) {
+    /// handle.touch(); // Reset idle timer after a user request
+    /// # }
+    /// ```
+    pub fn touch(&self) {
+        self.activity_flag.store(true, Ordering::Relaxed);
     }
 
     /// Waits for the scheduler thread to finish.

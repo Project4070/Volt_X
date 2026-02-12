@@ -1371,6 +1371,25 @@ impl ConcurrentVoltStore {
             message: format!("VoltStore write lock poisoned: {e}"),
         })
     }
+
+    /// Returns a clone of the inner `Arc<RwLock<VoltStore>>`.
+    ///
+    /// Useful for passing to components that require raw Arc access,
+    /// such as the sleep consolidation scheduler.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_db::{VoltStore, ConcurrentVoltStore};
+    ///
+    /// let concurrent = ConcurrentVoltStore::new(VoltStore::new());
+    /// let arc = concurrent.inner_arc();
+    /// let guard = arc.read().unwrap();
+    /// assert_eq!(guard.active_strand(), 0);
+    /// ```
+    pub fn inner_arc(&self) -> Arc<RwLock<VoltStore>> {
+        Arc::clone(&self.inner)
+    }
 }
 
 #[cfg(test)]
