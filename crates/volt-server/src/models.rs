@@ -199,3 +199,37 @@ pub struct HealthResponse {
     /// Service version.
     pub version: String,
 }
+
+/// A single module entry in the `GET /api/modules` response.
+///
+/// # Example
+///
+/// ```
+/// use volt_server::models::ModuleResponse;
+///
+/// let m = ModuleResponse {
+///     id: "math_engine".into(),
+///     display_name: "Math Engine".into(),
+///     version: "0.1.0".into(),
+///     author: "Volt X Team".into(),
+///     description: "Exact arithmetic.".into(),
+///     module_type: "HardStrand".into(),
+/// };
+/// let json = serde_json::to_string(&m).unwrap();
+/// assert!(json.contains("math_engine"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleResponse {
+    /// Unique module identifier.
+    pub id: String,
+    /// Human-readable display name.
+    pub display_name: String,
+    /// Semantic version string.
+    pub version: String,
+    /// Module author(s).
+    pub author: String,
+    /// Short description.
+    pub description: String,
+    /// Module type: "Translator", "HardStrand", or "ActionCore".
+    pub module_type: String,
+}

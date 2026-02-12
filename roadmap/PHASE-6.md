@@ -7,23 +7,30 @@ Open the platform to the community and launch the Intelligence Commons.
 
 ---
 
-## Milestone 6.1: Trait Specification + Module Hot-Plug (Week 43-44)
+## Milestone 6.1: Trait Specification + Module Hot-Plug (Week 43-44) -- COMPLETE
 
 **Crate:** all crates (refine interfaces)
 
-### What You Build
-- Finalize and document the three traits: `Translator`, `HardStrand`, `ActionCore`
-- Module discovery: at startup, scan installed crates for trait implementations via feature flags
-- Hot-plug infrastructure: `volt install <module-name>` downloads crate, compiles, registers with router
-- Example module: `volt-strand-weather` (fetches weather API, demonstrates HardStrand implementation)
+### What Was Built
 
-### What You Test
-- Install example module -> restart -> Intent Router correctly routes weather queries to it
-- Uninstall module -> restart -> weather queries fall back to Soft Core
-- Module with a bug (panic) -> caught by Volt, logged, does not crash the system
-- Documentation: another developer can read the docs and build a module in < 1 day
+- [x] Finalized and documented three traits: `Translator`, `HardStrand`, `ActionCore`
+- [x] `ModuleInfo` + `ModuleType` in volt-core for module metadata
+- [x] `ActionCore` trait in volt-translate with `TextAction` default impl
+- [x] Default `info()` methods on `HardStrand` and `Translator` (backward compatible)
+- [x] Module discovery: `ModuleRegistry::discover()` scans feature-gated modules at startup
+- [x] Hot-plug infrastructure: `volt modules list|install|uninstall` CLI + `GET /api/modules` endpoint
+- [x] `catch_unwind` panic safety in `IntentRouter::route()` + `unregister()`/`strand_names()`
+- [x] Example module: `WeatherStrand` (deterministic mock data, behind `weather` feature flag)
 
-**Duration:** 2 weeks.
+### What Was Tested
+
+- [x] Install weather module (enable feature) -> router routes weather queries to it
+- [x] Uninstall module (disable feature) -> weather queries fall back to Soft Core
+- [x] Module with a bug (panic) -> caught by router, logged, does not crash the system
+- [x] `ModuleRegistry` discovers built-in + feature-gated modules
+- [x] `GET /api/modules` returns JSON with module metadata
+
+**Duration:** 2 weeks. **ADR:** ADR-027.
 
 ---
 

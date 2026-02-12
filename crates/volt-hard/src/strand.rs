@@ -2,8 +2,18 @@
 //!
 //! Each Hard Strand registers a capability vector and processes frames
 //! that the Intent Router determines are relevant to its capability.
+//!
+//! ## Building a Module
+//!
+//! To create a new Hard Strand module:
+//!
+//! 1. Implement `HardStrand` for your struct.
+//! 2. Generate a capability vector via a seeded hash (see [`MathEngine`](crate::math_engine::MathEngine) for the pattern).
+//! 3. Set a threshold (0.3 is typical).
+//! 4. Register with the Intent Router via `router.register(Box::new(your_strand))`.
+//! 5. Optionally implement `info()` to provide module metadata.
 
-use volt_core::{TensorFrame, VoltError, SLOT_DIM};
+use volt_core::{ModuleInfo, TensorFrame, VoltError, SLOT_DIM};
 
 /// A pluggable deterministic computation module for the CPU Hard Core.
 ///
@@ -58,6 +68,25 @@ pub trait HardStrand: Send + Sync {
     /// The strand may modify specific slots in the frame. Slots produced
     /// by exact computation should have gamma = 1.0 and source = HardCore.
     fn process(&self, frame: &TensorFrame) -> Result<StrandResult, VoltError>;
+
+    /// Optional metadata about this module.
+    ///
+    /// Returns `None` by default. Community modules should override this
+    /// to provide introspectable metadata for the module registry.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_hard::strand::HardStrand;
+    /// use volt_hard::math_engine::MathEngine;
+    ///
+    /// let engine = MathEngine::new();
+    /// // Built-in strands return None by default.
+    /// assert!(engine.info().is_none());
+    /// ```
+    fn info(&self) -> Option<ModuleInfo> {
+        None
+    }
 }
 
 /// The result of a [`HardStrand`] processing a frame.

@@ -427,3 +427,124 @@ GPU dependency to volt-learn, violates architecture rules), async scheduler with
 tokio (rejected: CLAUDE.md forbids async in volt-learn), single-layer VFN update
 without per-layer API (rejected: can't implement true Forward-Forward without
 layer-local forward passes).
+
+## ADR-026: RLVF Joint Alignment Architecture (2026-02-12)
+
+**Decision:** RLVF (Reinforcement Learning from Verified Feedback) uses
+REINFORCE with baseline to update VFN weights based on a shaped reward signal.
+The reward combines output correctness (cosine similarity vs verified answer)
+with gamma calibration quality (penalizing overconfident errors, rewarding
+honest uncertainty).
+
+**Evaluation dataset:** 1000 deterministic (question, answer) pairs across
+4 categories (Math, Logic, Factual, Creative) at 250 each. Questions/answers
+are word sequences encoded by `StubTranslator`'s hash-based `word_to_vector`.
+No real NL understanding needed — the dataset tests that the VFN learns to
+map question embeddings toward answer embeddings.
+
+**Reward shaping:** Five reward levels: correct+confident (+1.0),
+correct+uncertain (+0.5), wrong+uncertain (+0.2, honest), wrong+mid (-0.5),
+wrong+overconfident (-2.0, strong penalty). This asymmetric shaping
+incentivizes calibrated confidence over raw accuracy.
+
+**REINFORCE with baseline:** Per-epoch exponential moving average baseline.
+Advantage = reward - baseline. Positive advantage → treat as positive FF
+sample (push goodness up). Negative advantage → treat as negative FF sample
+(push goodness down). Magnitude clamped to [-2.0, 2.0] for stability.
+Reuses the layer-local gradient computation from Forward-Forward (no backprop).
+
+**Certainty calibration metric:** Expected Calibration Error (ECE) computed
+over 10 equal-width gamma bins. ECE = Σ |accuracy_i - mean_gamma_i| × n_i / n.
+A perfectly calibrated model has ECE = 0.0.
+
+**Self-play logic puzzles:** Deterministic generation of 5 puzzle types
+(Modus Ponens, Transitivity, Modus Tollens, Conjunction, Disjunction) using
+a fixed vocabulary of atomic propositions. Graded by cosine similarity
+between VFN output and expected conclusion frame.
+
+**New dependency:** `volt-translate` added to `volt-learn` for encoding
+eval pairs into TensorFrames.
+
+**Alternatives considered:** PPO-style clipped objective (rejected: requires
+log-probability computation which VFN doesn't expose), separate reward model
+(rejected: over-engineering for this milestone), backpropagation through full
+pipeline (rejected: violates Forward-Forward paradigm and CLAUDE.md rules).
+
+## ADR-018: Shared VFN for Learning Loop Closure (2026-02-12)
+
+**Decision:** Add `SharedVfn = Arc<RwLock<Vfn>>` to `AppState`. The RAR
+inference pipeline reads (clones) from it; the sleep scheduler write-locks
+and trains it via Forward-Forward and RLVF. The pipeline thread snapshots the
+VFN once per request to minimize lock contention.
+**Reason:** Without shared state, the learning system trained a VFN that was
+discarded after each sleep cycle, and inference created a fresh random VFN on
+every request. Sharing the VFN closes the learning loop: trained weights carry
+through to subsequent inference.
+**Alternatives considered:** Persist VFN to disk and reload (rejected: adds
+I/O latency and crash-recovery complexity), pass VFN by reference into the
+RAR thread (rejected: would hold read lock for entire RAR loop duration,
+blocking sleep scheduler writes).
+
+## ADR-019: Sleep Scheduler Server Integration (2026-02-12)
+
+**Decision:** Spawn `SleepScheduler::spawn_background()` in `main.rs` with
+`Arc` clones of `VoltStore`, `Vfn`, and `EventLogger`. Added
+`build_app_with_state()` so `main.rs` can create `AppState` first, clone
+the Arcs, then build the router. Added `ConcurrentVoltStore::inner_arc()`
+to expose the raw `Arc<RwLock<VoltStore>>` needed by `spawn_background`.
+**Reason:** The sleep scheduler was fully implemented but never wired into
+the server. Consolidation, FF training, RLVF, graduation, and GC never ran.
+**Alternatives considered:** Run sleep in an async task (rejected:
+volt-learn is pure synchronous, mixing async would add complexity),
+trigger sleep from an HTTP endpoint only (rejected: would require manual
+invocation instead of automatic idle detection).
+
+## ADR-020: RLVF as Optional Sleep Phase (2026-02-12)
+
+**Decision:** Added `rlvf_config: Option<RlvfConfig>` and
+`rlvf_min_events: usize` to `SleepConfig`. RLVF runs after Forward-Forward
+in `run_sleep_cycle_inner()` only when enabled and enough events have
+accumulated. Server enables it by default.
+**Reason:** RLVF is more expensive than FF (evaluates 1000 QA pairs per
+epoch). Making it optional with an event threshold prevents wasted cycles
+early in the server's lifetime when there are too few events to learn from.
+**Alternatives considered:** Always run RLVF (rejected: wasteful when
+event count is low), separate RLVF scheduler thread (rejected: over-
+engineering — it shares the same VFN lock order as FF).
+
+## ADR-027: Module System Architecture (2026-02-12)
+
+**Decision:** Compile-time module system using Cargo feature flags,
+`ModuleInfo` metadata struct, `ActionCore` trait, `catch_unwind` panic
+safety, and `ModuleRegistry` discovery at startup. No dynamic loading.
+No new external dependencies (zero-dep milestone).
+
+**Components:**
+
+- `ModuleInfo` + `ModuleType` in volt-core: common metadata for all modules.
+- `HardStrand::info()` and `Translator::info()`: default methods returning
+  `Option<ModuleInfo>` (backward compatible, existing impls inherit `None`).
+- `ActionCore` trait in volt-translate: output modules converting
+  TensorFrames to human-consumable output (text, audio, image, etc.).
+- `catch_unwind(AssertUnwindSafe(...))` in `IntentRouter::route()`: catches
+  panicking strands, logs the error, returns non-activated decision.
+- `IntentRouter::unregister()` and `strand_names()`: runtime strand
+  management for hot-plug lifecycle.
+- `WeatherStrand` behind `#[cfg(feature = "weather")]`: example community
+  module with deterministic mock data (5 weather profiles).
+- `ModuleRegistry::discover()` in volt-server: enumerates built-in +
+  feature-gated modules at startup. `GET /api/modules` HTTP endpoint.
+- CLI subcommands: `volt modules list|install|uninstall` prints human-
+  readable instructions for the feature-flag workflow.
+
+**Reason:** Rust is a compiled language. Dynamic loading (`dlopen`)
+requires `unsafe` and loses type-system guarantees. Feature flags are the
+established Cargo pattern for optional compilation units. This approach
+gives zero runtime overhead for disabled modules and full type checking
+at compile time.
+**Alternatives considered:** `libloading` dynamic plugins (rejected:
+requires `unsafe`, ABI fragility, no type checking across boundary),
+WASM plugin host (rejected: adds wasmtime dependency + performance
+overhead for CPU-bound strand logic, better suited for untrusted
+third-party code in a future milestone), trait objects with `inventory`
+crate (rejected: adds external dependency, magic linker tricks).

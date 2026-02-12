@@ -96,6 +96,15 @@ pub enum VoltError {
         message: String,
     },
 
+    /// A module operation failed (load, register, or execute).
+    #[error("module '{name}' error: {message}")]
+    ModuleError {
+        /// The module identifier.
+        name: String,
+        /// Description of what went wrong.
+        message: String,
+    },
+
     /// An internal error that should not happen.
     #[error("internal error: {message}")]
     Internal {

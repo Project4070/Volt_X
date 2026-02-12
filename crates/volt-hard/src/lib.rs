@@ -79,6 +79,8 @@ pub mod pipeline;
 pub mod proof_constructor;
 pub mod router;
 pub mod strand;
+#[cfg(feature = "weather")]
+pub mod weather_strand;
 
 use volt_core::{TensorFrame, VoltError};
 
@@ -147,6 +149,9 @@ pub fn default_router() -> router::IntentRouter {
     if let Ok(runner) = code_runner::CodeRunner::new() {
         router.register(Box::new(runner));
     }
+
+    #[cfg(feature = "weather")]
+    router.register(Box::new(weather_strand::WeatherStrand::new()));
 
     router
 }

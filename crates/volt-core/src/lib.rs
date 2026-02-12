@@ -20,11 +20,13 @@
 pub mod error;
 pub mod frame;
 pub mod meta;
+pub mod module_info;
 pub mod slot;
 
 pub use error::VoltError;
 pub use frame::TensorFrame;
 pub use meta::FrameMeta;
+pub use module_info::{ModuleInfo, ModuleType};
 pub use slot::{SlotData, SlotMeta, SlotRole};
 
 /// Maximum number of slots in a TensorFrame.

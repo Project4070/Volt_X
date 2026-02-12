@@ -11,12 +11,14 @@ use axum::Json;
 use volt_bus::similarity_frames;
 use volt_core::slot::SlotSource;
 use volt_core::{SlotRole, VoltError, SLOT_DIM, MAX_SLOTS};
+use volt_soft::attention::SlotAttention;
+use volt_soft::rar::{rar_loop_with_ghosts, GhostConfig, RarConfig};
 use volt_translate::decode::format_output;
 use volt_translate::Translator;
 
 use crate::models::{
-    ErrorResponse, HealthResponse, ProofStepResponse, SlotState, ThinkRequest, ThinkResponse,
-    TimingMs,
+    ErrorResponse, HealthResponse, ModuleResponse, ProofStepResponse, SlotState, ThinkRequest,
+    ThinkResponse, TimingMs,
 };
 use crate::state::AppState;
 
@@ -92,6 +94,18 @@ pub async fn think(
         .unwrap_or_default();
     let ghost_count = ghost_gists.len();
 
+    // Snapshot the shared VFN for this request. Clone is ~6 MB (three
+    // Linear layers) but avoids holding the read lock during the entire
+    // RAR loop, so the sleep scheduler can still write-lock for training.
+    let vfn_snapshot = state.vfn.read().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("VFN read lock failed: {e}"),
+            }),
+        )
+    })?.clone();
+
     // Run the full CPU-heavy pipeline on a thread with adequate stack.
     // TensorFrame is ~65KB and the pipeline creates multiple copies,
     // so we need more than the default async executor thread stack.
@@ -100,12 +114,17 @@ pub async fn think(
         .stack_size(8 * 1024 * 1024)
         .spawn(move || -> Result<PipelineOutput, (StatusCode, String)> {
             // Soft Core: RAR inference loop with ghost frame cross-attention.
-            // Ghost gists from the Bleed Buffer provide subtle memory
-            // influence (alpha=0.1) during the Attend phase.
-            let rar_result = volt_soft::process_rar_with_ghosts(
+            // Uses the shared VFN (snapshot) so trained weights from sleep
+            // consolidation carry through to inference.
+            let attention = SlotAttention::new_random(43);
+            let config = RarConfig::default();
+            let ghost_config = GhostConfig { gists: ghost_gists, alpha: 0.1 };
+            let rar_result = rar_loop_with_ghosts(
                 &pipeline_frame,
-                &ghost_gists,
-                0.1,
+                &vfn_snapshot,
+                &attention,
+                &config,
+                &ghost_config,
             )
             .map_err(|e| {
                 (
@@ -288,6 +307,38 @@ pub async fn think(
             total_ms,
         },
     }))
+}
+
+/// `GET /api/modules` — list all installed modules.
+///
+/// Returns a JSON array of module metadata, including built-in modules
+/// and any feature-gated community modules that were compiled in.
+///
+/// # Example Response
+///
+/// ```json
+/// [
+///   {"id": "math_engine", "display_name": "Math Engine", ...},
+///   {"id": "hdc_algebra", "display_name": "HDC Algebra", ...}
+/// ]
+/// ```
+pub async fn list_modules(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let modules: Vec<ModuleResponse> = state
+        .registry
+        .list_modules()
+        .iter()
+        .map(|m| ModuleResponse {
+            id: m.id.clone(),
+            display_name: m.display_name.clone(),
+            version: m.version.clone(),
+            author: m.author.clone(),
+            description: m.description.clone(),
+            module_type: m.module_type.to_string(),
+        })
+        .collect();
+    Json(modules)
 }
 
 /// Format a [`SlotRole`] to a human-readable string.

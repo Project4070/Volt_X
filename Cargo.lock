@@ -3460,6 +3460,7 @@ dependencies = [
  "proptest",
  "serde",
  "thiserror 2.0.18",
+ "tracing",
  "volt-bus",
  "volt-core",
  "wasmtime",
@@ -3477,6 +3478,7 @@ dependencies = [
  "volt-core",
  "volt-db",
  "volt-soft",
+ "volt-translate",
 ]
 
 [[package]]

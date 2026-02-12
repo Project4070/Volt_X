@@ -16,6 +16,8 @@
 //!
 //! If no strand exceeds threshold, the frame passes through unchanged.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
 use volt_bus::similarity;
 use volt_core::{TensorFrame, VoltError, MAX_SLOTS, SLOT_DIM};
 
@@ -148,6 +150,47 @@ impl IntentRouter {
         self.strands.len()
     }
 
+    /// Unregister a strand by name.
+    ///
+    /// Returns `true` if a strand with the given name was found and removed,
+    /// `false` if no strand with that name was registered.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_hard::router::IntentRouter;
+    /// use volt_hard::math_engine::MathEngine;
+    ///
+    /// let mut router = IntentRouter::new();
+    /// router.register(Box::new(MathEngine::new()));
+    /// assert_eq!(router.strand_count(), 1);
+    /// assert!(router.unregister("math_engine"));
+    /// assert_eq!(router.strand_count(), 0);
+    /// assert!(!router.unregister("nonexistent"));
+    /// ```
+    pub fn unregister(&mut self, name: &str) -> bool {
+        let before = self.strands.len();
+        self.strands.retain(|s| s.name() != name);
+        self.strands.len() < before
+    }
+
+    /// List the names of all registered strands.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_hard::router::IntentRouter;
+    /// use volt_hard::math_engine::MathEngine;
+    ///
+    /// let mut router = IntentRouter::new();
+    /// router.register(Box::new(MathEngine::new()));
+    /// let names = router.strand_names();
+    /// assert_eq!(names, vec!["math_engine"]);
+    /// ```
+    pub fn strand_names(&self) -> Vec<&str> {
+        self.strands.iter().map(|s| s.name()).collect()
+    }
+
     /// Route a frame through the Hard Core pipeline.
     ///
     /// Computes cosine similarity between each strand's capability vector
@@ -243,17 +286,50 @@ impl IntentRouter {
             let threshold = strand.threshold();
 
             if best_sim >= threshold {
-                // Activate the strand
-                let strand_result = strand.process(frame)?;
+                // Activate the strand with panic safety.
+                // If a buggy module panics, we catch it, log an error,
+                // and pass the frame through unchanged rather than
+                // crashing the entire server.
+                let strand_name = strand.name().to_string();
+                let catch_result = catch_unwind(AssertUnwindSafe(|| strand.process(frame)));
 
-                decisions.push(RoutingDecision {
-                    strand_name: strand.name().to_string(),
-                    slot_index: best_slot_idx,
-                    similarity: best_sim,
-                    activated: strand_result.activated,
-                });
-
-                result_frame = strand_result.frame;
+                match catch_result {
+                    Ok(Ok(strand_result)) => {
+                        decisions.push(RoutingDecision {
+                            strand_name,
+                            slot_index: best_slot_idx,
+                            similarity: best_sim,
+                            activated: strand_result.activated,
+                        });
+                        result_frame = strand_result.frame;
+                    }
+                    Ok(Err(e)) => {
+                        // Strand returned an error — propagate it.
+                        return Err(e);
+                    }
+                    Err(panic_payload) => {
+                        // Strand panicked — log and continue with frame unchanged.
+                        let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                            (*s).to_string()
+                        } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "unknown panic".to_string()
+                        };
+                        tracing::error!(
+                            strand = %strand_name,
+                            panic = %panic_msg,
+                            "Hard strand panicked during processing — skipping"
+                        );
+                        decisions.push(RoutingDecision {
+                            strand_name,
+                            slot_index: best_slot_idx,
+                            similarity: best_sim,
+                            activated: false,
+                        });
+                        result_frame = frame.clone();
+                    }
+                }
             } else {
                 // Below threshold — pass through
                 decisions.push(RoutingDecision {
@@ -323,74 +399,89 @@ mod tests {
 
     #[test]
     fn router_activates_math_engine_on_capability_match() {
-        let mut router = IntentRouter::new();
-        let engine = MathEngine::new();
-        let cap = *engine.capability_vector();
-        router.register(Box::new(engine));
+        // TensorFrame is ~65KB; catch_unwind on Windows SEH needs extra stack.
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(|| {
+                let mut router = IntentRouter::new();
+                let engine = MathEngine::new();
+                let cap = *engine.capability_vector();
+                router.register(Box::new(engine));
 
-        // Build frame with math capability vector in predicate slot
-        // and operation data in instrument slot
-        let mut frame = TensorFrame::new();
+                // Build frame with math capability vector in predicate slot
+                // and operation data in instrument slot
+                let mut frame = TensorFrame::new();
 
-        // Tag predicate with math capability vector (high similarity)
-        let mut pred = SlotData::new(SlotRole::Predicate);
-        pred.write_resolution(0, cap);
-        frame.write_slot(1, pred).unwrap();
-        frame.meta[1].certainty = 0.8;
+                // Tag predicate with math capability vector (high similarity)
+                let mut pred = SlotData::new(SlotRole::Predicate);
+                pred.write_resolution(0, cap);
+                frame.write_slot(1, pred).unwrap();
+                frame.meta[1].certainty = 0.8;
 
-        // Put actual math operation in instrument slot
-        let mut instrument = SlotData::new(SlotRole::Instrument);
-        let mut data = [0.0_f32; SLOT_DIM];
-        data[0] = 3.0; // MUL
-        data[1] = 847.0;
-        data[2] = 392.0;
-        instrument.write_resolution(0, data);
-        frame.write_slot(6, instrument).unwrap();
-        frame.meta[6].certainty = 0.9;
+                // Put actual math operation in instrument slot
+                let mut instrument = SlotData::new(SlotRole::Instrument);
+                let mut data = [0.0_f32; SLOT_DIM];
+                data[0] = 3.0; // MUL
+                data[1] = 847.0;
+                data[2] = 392.0;
+                instrument.write_resolution(0, data);
+                frame.write_slot(6, instrument).unwrap();
+                frame.meta[6].certainty = 0.9;
 
-        let result = router.route(&frame).unwrap();
+                let result = router.route(&frame).unwrap();
 
-        assert_eq!(result.decisions.len(), 1);
-        assert!(result.decisions[0].activated);
-        assert_eq!(result.decisions[0].strand_name, "math_engine");
-        assert!(result.decisions[0].similarity > 0.9);
+                assert_eq!(result.decisions.len(), 1);
+                assert!(result.decisions[0].activated);
+                assert_eq!(result.decisions[0].strand_name, "math_engine");
+                assert!(result.decisions[0].similarity > 0.9);
 
-        // Verify the math was computed
-        let r = result.frame.read_slot(8).unwrap();
-        assert!(
-            (r.resolutions[0].unwrap()[0] - 332_024.0).abs() < 1.0,
-            "Should compute 847 * 392 = 332024, got {}",
-            r.resolutions[0].unwrap()[0]
-        );
+                // Verify the math was computed
+                let r = result.frame.read_slot(8).unwrap();
+                assert!(
+                    (r.resolutions[0].unwrap()[0] - 332_024.0).abs() < 1.0,
+                    "Should compute 847 * 392 = 332024, got {}",
+                    r.resolutions[0].unwrap()[0]
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
     fn router_non_math_frame_does_not_activate() {
-        let mut router = IntentRouter::new();
-        router.register(Box::new(MathEngine::new()));
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(|| {
+                let mut router = IntentRouter::new();
+                router.register(Box::new(MathEngine::new()));
 
-        // Build a frame with random (non-math) content
-        let mut frame = TensorFrame::new();
-        let mut agent = SlotData::new(SlotRole::Agent);
-        // Use a vector that's very different from math capability
-        let mut v = [0.0_f32; SLOT_DIM];
-        // "Tell me about cats" — orthogonal to math capability
-        for i in 0..SLOT_DIM {
-            v[i] = if i % 2 == 0 { 0.1 } else { -0.1 };
-        }
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        for x in &mut v {
-            *x /= norm;
-        }
-        agent.write_resolution(0, v);
-        frame.write_slot(0, agent).unwrap();
-        frame.meta[0].certainty = 0.8;
+                // Build a frame with random (non-math) content
+                let mut frame = TensorFrame::new();
+                let mut agent = SlotData::new(SlotRole::Agent);
+                // Use a vector that's very different from math capability
+                let mut v = [0.0_f32; SLOT_DIM];
+                // "Tell me about cats" — orthogonal to math capability
+                for i in 0..SLOT_DIM {
+                    v[i] = if i % 2 == 0 { 0.1 } else { -0.1 };
+                }
+                let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                for x in &mut v {
+                    *x /= norm;
+                }
+                agent.write_resolution(0, v);
+                frame.write_slot(0, agent).unwrap();
+                frame.meta[0].certainty = 0.8;
 
-        let result = router.route(&frame).unwrap();
+                let result = router.route(&frame).unwrap();
 
-        // Either no decision, or decision with activated=false
-        let activated = result.decisions.iter().any(|d| d.activated);
-        assert!(!activated, "Non-math frame should not activate math engine");
+                // Either no decision, or decision with activated=false
+                let activated = result.decisions.iter().any(|d| d.activated);
+                assert!(!activated, "Non-math frame should not activate math engine");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

@@ -3,6 +3,11 @@ name = "volt-server"
 version.workspace = true
 edition.workspace = true
 
+[features]
+sandbox = ["volt-hard/sandbox"]
+weather = ["volt-hard/weather"]
+llm = ["volt-translate/llm"]
+
 [dependencies]
 axum.workspace = true
 volt-core.workspace = true

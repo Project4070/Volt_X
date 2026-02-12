@@ -15,8 +15,10 @@
 //! ## Architecture Rules
 //!
 //! - Translators implement the [`Translator`] trait.
+//! - Action cores implement the [`ActionCore`](action_core::ActionCore) trait.
 //! - Depends on `volt-core`, `volt-bus`, `volt-db`.
 
+pub mod action_core;
 pub mod decode;
 pub mod encode;
 pub mod stub;
@@ -24,13 +26,14 @@ pub mod stub;
 #[cfg(feature = "llm")]
 pub mod llm;
 
+pub use action_core::{ActionCore, ActionOutput, OutputModality, TextAction};
 pub use stub::StubTranslator;
 pub use volt_core;
 
 #[cfg(feature = "llm")]
 pub use llm::LlmTranslator;
 
-use volt_core::{SlotRole, TensorFrame, VoltError};
+use volt_core::{ModuleInfo, SlotRole, TensorFrame, VoltError};
 
 /// Output of a forward translation (text -> frame).
 ///
@@ -106,4 +109,12 @@ pub trait Translator {
         &self,
         frame: &TensorFrame,
     ) -> Result<Vec<(usize, SlotRole, String)>, VoltError>;
+
+    /// Optional metadata about this translator module.
+    ///
+    /// Returns `None` by default. Community modules should override
+    /// this to provide introspectable metadata for the module registry.
+    fn info(&self) -> Option<ModuleInfo> {
+        None
+    }
 }
