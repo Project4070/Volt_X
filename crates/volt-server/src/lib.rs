@@ -24,9 +24,12 @@ pub mod state;
 
 pub use volt_core;
 
+use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::Router;
 use std::sync::Arc;
+use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 
 use crate::state::AppState;
 
@@ -77,6 +80,18 @@ pub fn build_app_with_state(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(routes::health))
         .route("/api/think", post(routes::think))
+        .route("/api/think/stream", post(routes::think_stream))
         .route("/api/modules", get(routes::list_modules))
+        .route(
+            "/api/conversations",
+            post(routes::create_conversation).get(routes::list_conversations),
+        )
+        .route(
+            "/api/conversations/{id}/history",
+            get(routes::get_conversation_history),
+        )
+        .nest_service("/static", ServeDir::new("crates/volt-server/static"))
+        .route("/", get(|| async { Redirect::permanent("/static/index.html") }))
+        .layer(CorsLayer::permissive())
         .with_state(state)
 }

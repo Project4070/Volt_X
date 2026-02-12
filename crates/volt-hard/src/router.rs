@@ -269,6 +269,12 @@ impl IntentRouter {
             let cap = strand.capability_vector();
             for &(slot_idx, slot_vec) in &slot_vectors {
                 let sim = similarity(cap, slot_vec);
+                tracing::debug!(
+                    "Strand '{}' vs slot {}: sim={:.4}, cap=[{:.4},{:.4},{:.4}...], slot=[{:.4},{:.4},{:.4}...]",
+                    strand.name(), slot_idx, sim,
+                    cap[0], cap[1], cap[2],
+                    slot_vec[0], slot_vec[1], slot_vec[2]
+                );
                 if sim > best_sim {
                     best_sim = sim;
                     best_strand_idx = Some(strand_idx);

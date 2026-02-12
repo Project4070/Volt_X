@@ -110,8 +110,14 @@ impl MathEngine {
     /// assert_eq!(engine.name(), "math_engine");
     /// ```
     pub fn new() -> Self {
+        let cap = Self::build_capability_vector();
+        tracing::debug!(
+            "MathEngine capability: [{:.4}, {:.4}, {:.4}, ...] norm={:.6}",
+            cap[0], cap[1], cap[2],
+            cap.iter().map(|x| x * x).sum::<f32>().sqrt()
+        );
         Self {
-            capability: Self::build_capability_vector(),
+            capability: cap,
         }
     }
 

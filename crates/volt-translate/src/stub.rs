@@ -101,6 +101,112 @@ impl StubTranslator {
         }
         Ok(())
     }
+
+    /// Try to encode input as a math expression.
+    /// Returns Some(output) if it's a math expression, None otherwise.
+    fn try_encode_math(&self, input: &str) -> Result<Option<TranslateOutput>, VoltError> {
+        let trimmed = input.trim();
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+
+        // Pattern: "number operator number" (e.g., "10 + 5")
+        if parts.len() == 3 {
+            let left = parts[0].parse::<f32>();
+            let op = parts[1];
+            let right = parts[2].parse::<f32>();
+
+            if let (Ok(a), Ok(b)) = (left, right) {
+                let op_code = match op {
+                    "+" => Some(1.0_f32), // OP_ADD
+                    "-" => Some(2.0_f32), // OP_SUB
+                    "*" | "×" => Some(3.0_f32), // OP_MUL
+                    "/" | "÷" => Some(4.0_f32), // OP_DIV
+                    "^" | "**" => Some(5.0_f32), // OP_POW
+                    _ => None,
+                };
+
+                if let Some(code) = op_code {
+                    return Ok(Some(self.encode_math_operation(code, a, b)?));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Encode a math operation into slot 6 (Instrument) format.
+    ///
+    /// Uses the math engine's capability vector as a "tag" in slot 1 (Predicate)
+    /// to trigger routing, and encodes the actual operation in slot 6 (Instrument).
+    fn encode_math_operation(&self, op_code: f32, left: f32, right: f32) -> Result<TranslateOutput, VoltError> {
+        use volt_core::{SlotData, SlotMeta};
+
+        let mut frame = TensorFrame::new();
+
+        // CRITICAL: Tag with math capability vector in slot 1 (Predicate)
+        // This triggers the Intent Router to route to math_engine.
+        // The vector MUST match math_engine's build_capability_vector().
+        let math_cap = Self::build_math_capability_vector();
+        let mut predicate = SlotData::new(SlotRole::Predicate);
+        predicate.write_resolution(0, math_cap);
+        frame.slots[1] = Some(predicate);
+        frame.meta[1] = SlotMeta {
+            certainty: 0.9, // High certainty for exact match
+            source: SlotSource::Translator,
+            updated_at: 0,
+            needs_verify: false,
+        };
+
+        // Encode operation data into slot 6 (Instrument)
+        let mut instrument = SlotData::new(SlotRole::Instrument);
+        let mut data = [0.0_f32; SLOT_DIM];
+        data[0] = op_code;
+        data[1] = left;
+        data[2] = right;
+        instrument.write_resolution(0, data);
+        frame.slots[6] = Some(instrument);
+        frame.meta[6] = SlotMeta {
+            certainty: 1.0, // Math operations are certain
+            source: SlotSource::Translator,
+            updated_at: 0,
+            needs_verify: false,
+        };
+
+        frame.frame_meta.discourse_type = DiscourseType::Query;
+        frame.frame_meta.strand_id = 0;
+
+        Ok(TranslateOutput {
+            frame,
+            token_count: 3,
+            slots_filled: 2, // Both slot 1 and slot 6
+        })
+    }
+
+    /// Build the same capability vector as MathEngine for routing.
+    ///
+    /// This MUST match the algorithm in volt-hard/src/math_engine.rs
+    /// build_capability_vector() exactly, or routing will fail.
+    fn build_math_capability_vector() -> [f32; SLOT_DIM] {
+        const MATH_SEED: u64 = 0x4d41_5448_454e_4731; // "MATHENG1"
+        let mut v = [0.0_f32; SLOT_DIM];
+        for (i, val) in v.iter_mut().enumerate() {
+            let mut h = MATH_SEED.wrapping_mul(0xd2b7_4407_b1ce_6e93);
+            h = h.wrapping_add(i as u64);
+            h ^= h >> 33;
+            h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+            h ^= h >> 33;
+            h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+            h ^= h >> 33;
+            *val = ((h as f64 / u64::MAX as f64) * 2.0 - 1.0) as f32;
+        }
+        // L2 normalize
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-10 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        v
+    }
 }
 
 impl Clone for StubTranslator {
@@ -132,6 +238,11 @@ impl Translator for StubTranslator {
                     input.len(),
                 ),
             });
+        }
+
+        // Check for math expressions first
+        if let Some(output) = self.try_encode_math(input)? {
+            return Ok(output);
         }
 
         let words = tokenize(input);
@@ -194,6 +305,26 @@ impl Translator for StubTranslator {
 
         for i in 0..MAX_SLOTS {
             if let Some(slot_data) = &frame.slots[i] {
+                // Special handling for slot 8 (Result) — decode numeric result
+                if i == 8 && slot_data.role == SlotRole::Result {
+                    if let Some(vec) = slot_data.resolutions[0].as_ref() {
+                        // Math engine writes result in dim[0], valid flag in dim[1]
+                        let result_value = vec[0];
+                        let valid_flag = vec[1];
+                        if valid_flag > 0.5 {
+                            let word = if result_value.fract().abs() < 0.0001 {
+                                // Integer result
+                                format!("{}", result_value as i64)
+                            } else {
+                                // Floating point result
+                                format!("{:.4}", result_value)
+                            };
+                            slot_words.push((i, slot_data.role, word));
+                            continue;
+                        }
+                    }
+                }
+
                 // Try R1 first (proposition level, where encode writes),
                 // then fall back through other resolutions
                 let vector = slot_data.resolutions[1]

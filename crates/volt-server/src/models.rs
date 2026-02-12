@@ -13,10 +13,13 @@ use serde::{Deserialize, Serialize};
 /// let req: ThinkRequest = serde_json::from_str(json).unwrap();
 /// assert_eq!(req.text, "hello world");
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRequest {
     /// The input text to process.
     pub text: String,
+    /// Optional conversation ID. If None, a new conversation will be created.
+    #[serde(default)]
+    pub conversation_id: Option<u64>,
 }
 
 /// Response body for `POST /api/think`.
@@ -29,7 +32,8 @@ pub struct ThinkRequest {
 /// let resp = ThinkResponse {
 ///     text: "cat sat mat.".into(),
 ///     gamma: vec![0.8, 0.8, 0.8],
-///     strand_id: 0,
+///     conversation_id: 1,
+///     strand_id: 1,
 ///     iterations: 1,
 ///     slot_states: vec![SlotState {
 ///         index: 0,
@@ -60,7 +64,9 @@ pub struct ThinkResponse {
     pub text: String,
     /// Per-slot certainty (gamma) values for active slots.
     pub gamma: Vec<f32>,
-    /// The strand ID.
+    /// The conversation ID (same as strand_id in VoltDB).
+    pub conversation_id: u64,
+    /// The strand ID (internal VoltDB identifier, same as conversation_id).
     pub strand_id: u64,
     /// Number of RAR iterations performed by the Soft Core.
     pub iterations: u32,
@@ -232,4 +238,152 @@ pub struct ModuleResponse {
     pub description: String,
     /// Module type: "Translator", "HardStrand", or "ActionCore".
     pub module_type: String,
+}
+
+/// Metadata about a conversation.
+///
+/// # Example
+///
+/// ```
+/// use volt_server::models::ConversationMeta;
+///
+/// let meta = ConversationMeta {
+///     id: 1,
+///     created_at: 1234567890,
+///     last_message_at: 1234567900,
+///     message_count: 5,
+/// };
+/// let json = serde_json::to_string(&meta).unwrap();
+/// assert!(json.contains("\"id\":1"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationMeta {
+    /// Unique conversation identifier (same as VoltDB strand_id).
+    pub id: u64,
+    /// Unix timestamp (microseconds) when conversation was created.
+    pub created_at: u64,
+    /// Unix timestamp (microseconds) of the last message.
+    pub last_message_at: u64,
+    /// Total number of messages in the conversation.
+    pub message_count: usize,
+}
+
+/// Response body for `POST /api/conversations`.
+///
+/// # Example
+///
+/// ```
+/// use volt_server::models::CreateConversationResponse;
+///
+/// let resp = CreateConversationResponse { conversation_id: 42 };
+/// let json = serde_json::to_string(&resp).unwrap();
+/// assert!(json.contains("42"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateConversationResponse {
+    /// The newly created conversation ID.
+    pub conversation_id: u64,
+}
+
+/// Response body for `GET /api/conversations`.
+///
+/// # Example
+///
+/// ```
+/// use volt_server::models::{ConversationListResponse, ConversationMeta};
+///
+/// let resp = ConversationListResponse {
+///     conversations: vec![ConversationMeta {
+///         id: 1,
+///         created_at: 1000,
+///         last_message_at: 2000,
+///         message_count: 3,
+///     }],
+/// };
+/// let json = serde_json::to_string(&resp).unwrap();
+/// assert!(json.contains("conversations"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationListResponse {
+    /// List of all conversations, sorted by last_message_at descending.
+    pub conversations: Vec<ConversationMeta>,
+}
+
+/// A single message in a conversation history.
+///
+/// # Example
+///
+/// ```
+/// use volt_server::models::HistoryMessage;
+///
+/// let msg = HistoryMessage {
+///     frame_id: 123,
+///     text: "hello world".into(),
+///     gamma: vec![0.8, 0.9],
+///     timestamp: 1234567890,
+/// };
+/// let json = serde_json::to_string(&msg).unwrap();
+/// assert!(json.contains("hello world"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryMessage {
+    /// The frame ID in VoltDB.
+    pub frame_id: u64,
+    /// The decoded message text.
+    pub text: String,
+    /// Per-slot gamma values for active slots.
+    pub gamma: Vec<f32>,
+    /// Unix timestamp (microseconds) when this message was processed.
+    pub timestamp: u64,
+}
+
+/// Response body for `GET /api/conversations/:id/history`.
+///
+/// # Example
+///
+/// ```
+/// use volt_server::models::{ConversationHistoryResponse, HistoryMessage};
+///
+/// let resp = ConversationHistoryResponse {
+///     conversation_id: 1,
+///     messages: vec![HistoryMessage {
+///         frame_id: 100,
+///         text: "hello".into(),
+///         gamma: vec![0.8],
+///         timestamp: 1000,
+///     }],
+/// };
+/// let json = serde_json::to_string(&resp).unwrap();
+/// assert!(json.contains("hello"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationHistoryResponse {
+    /// The conversation ID.
+    pub conversation_id: u64,
+    /// All messages in chronological order (oldest first).
+    pub messages: Vec<HistoryMessage>,
+}
+
+/// Server-Sent Event for streaming inference progress.
+///
+/// # Example
+///
+/// ```
+/// use volt_server::models::StreamEvent;
+///
+/// let event = StreamEvent::Status("Encoding...".to_string());
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum StreamEvent {
+    /// Status update message
+    Status(String),
+    /// Encoding phase started
+    Encoding,
+    /// RAR inference started
+    Thinking,
+    /// Processing completed
+    Complete(ThinkResponse),
+    /// Error occurred
+    Error(String),
 }

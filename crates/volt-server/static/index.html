@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Volt X Chat</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="app">
+        <div id="sidebar">
+            <div class="sidebar-header">
+                <h2>Volt X</h2>
+                <button id="new-conv-btn" title="New Conversation">+ New</button>
+            </div>
+            <div id="conv-list"></div>
+        </div>
+
+        <div id="main">
+            <div id="chat-header">
+                <div id="conv-info">
+                    <span id="conv-title">Conversation</span>
+                    <span id="conv-stats"></span>
+                </div>
+                <div id="header-controls">
+                    <button id="stream-toggle" class="active" title="Toggle Streaming Mode">⚡ Streaming</button>
+                    <button id="debug-toggle" title="Toggle Debug Mode">⚙ Debug</button>
+                </div>
+            </div>
+
+            <div id="chat-container">
+                <div id="messages"></div>
+            </div>
+
+            <div id="input-container">
+                <textarea id="input" placeholder="Type a message..." rows="1"></textarea>
+                <button id="send-btn">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
