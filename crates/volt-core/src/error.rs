@@ -89,6 +89,13 @@ pub enum VoltError {
         message: String,
     },
 
+    /// A learning or event-logging operation failed.
+    #[error("learn error: {message}")]
+    LearnError {
+        /// Description of what went wrong.
+        message: String,
+    },
+
     /// An internal error that should not happen.
     #[error("internal error: {message}")]
     Internal {

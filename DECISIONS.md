@@ -361,3 +361,35 @@ for lock-free concurrent access (rejected: `RwLock` is simpler and sufficient
 for current workload), `sled` or `rocksdb` as the T2 backend (rejected:
 external dependency too heavy, custom LSM gives us control over the mmap +
 Bloom + compaction pipeline).
+
+## ADR-024: Learning Event Logging Architecture (2026-02-12)
+
+**Decision:** Learning events are accumulated in a bounded in-memory buffer
+(`EventBuffer`, default capacity 10,000) with FIFO eviction, wrapped by
+`EventLogger` which provides on-demand statistics and JSON persistence.
+The logger is shared across server handlers via `Arc<RwLock<EventLogger>>`.
+
+**Event struct:** `LearningEvent { frame_id, strand_id, query_type,
+gamma_scores, convergence_iterations, ghost_activations, timestamp }`.
+All fields are available from existing pipeline outputs — no new data
+collection is needed.
+
+**Statistics:** Computed on demand from the buffer (no incremental counters).
+`StrandStatistics` includes query count, average gamma, average iterations,
+and `TopicDistribution` across discourse types.
+
+**Persistence:** JSON files matching the `StrandStore` save/load pattern.
+Save/load runs on a dedicated thread with 8 MB stack for Windows
+compatibility.
+
+**Server integration:** `EventLogger` added to `AppState` behind
+`Arc<RwLock<_>>`. Event logging is best-effort — a poisoned lock does
+not fail the inference request.
+
+**Error variant:** New `VoltError::LearnError { message }` follows the
+per-domain pattern (ADR-003).
+
+**Alternatives considered:** VoltDB WAL for event persistence (rejected:
+WAL is optimized for frame crash recovery, not analytics events), ring
+buffer (rejected: complicates drain/index semantics), incremental statistics
+(rejected: adds complexity for minimal gain at expected buffer sizes).

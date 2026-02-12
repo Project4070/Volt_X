@@ -4,11 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-volt-core.workspace = true
+volt-core = { workspace = true, features = ["serde"] }
 volt-bus.workspace = true
 volt-db.workspace = true
 volt-soft.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

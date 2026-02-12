@@ -200,6 +200,35 @@ pub async fn think(
         guard.total_frame_count()
     };
 
+    // Log learning event (best-effort — never fail the request).
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+
+        let mut gamma_scores = [0.0f32; MAX_SLOTS];
+        for (i, score) in gamma_scores.iter_mut().enumerate() {
+            if verified_frame.slots[i].is_some() {
+                *score = verified_frame.meta[i].certainty;
+            }
+        }
+
+        let event = volt_learn::LearningEvent {
+            frame_id: verified_frame.frame_meta.frame_id,
+            strand_id: verified_frame.frame_meta.strand_id,
+            query_type: verified_frame.frame_meta.discourse_type,
+            gamma_scores,
+            convergence_iterations: pipeline_output.iterations,
+            ghost_activations: pipeline_output.ghost_count,
+            timestamp: now,
+        };
+
+        if let Ok(mut logger) = state.event_logger.write() {
+            logger.log(event);
+        }
+    }
+
     // Extract gamma values from active slots
     let gamma: Vec<f32> = (0..MAX_SLOTS)
         .filter(|&i| verified_frame.slots[i].is_some())
