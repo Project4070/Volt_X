@@ -43,7 +43,9 @@ pub mod attention;
 pub mod code_attention;
 pub mod diffusion;
 pub mod ghost_attention;
+pub mod learned_diffusion;
 pub mod rar;
+pub mod scaled_vfn;
 pub mod vfn;
 
 // GPU modules — compiled only with `gpu` feature

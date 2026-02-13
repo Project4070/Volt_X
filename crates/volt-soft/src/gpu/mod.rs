@@ -14,6 +14,7 @@
 
 pub mod attention;
 pub mod rar;
+pub mod scaled_vfn;
 pub mod vfn;
 
 use candle_core::Device;

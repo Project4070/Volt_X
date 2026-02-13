@@ -56,6 +56,10 @@ pub mod role_labels;
 #[cfg(feature = "code-training")]
 pub mod contrastive;
 
+// Phase 2: Soft Core Training
+pub mod code_frame_pairs;
+pub mod nn_rng;
+
 // Milestone 5.1: Learning Event Logging
 pub mod event;
 pub mod buffer;
@@ -105,3 +109,9 @@ pub use codebook_init::{CodebookInitConfig, CodebookInitResult, init_codebook_fr
 // Phase 1 re-exports
 pub use codesearchnet::{CsnRecord, CsnDataset};
 pub use role_labels::label_code_tokens;
+
+// Phase 2 re-exports
+pub use code_frame_pairs::{
+    generate_code_frame_pairs, classify_problem,
+    CodeFramePair, CodeFramePairConfig, CurriculumStageFilter,
+};

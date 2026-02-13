@@ -45,3 +45,7 @@ required-features = ["code-training"]
 name = "train-decoder"
 path = "src/bin/train_decoder.rs"
 required-features = ["code-training"]
+
+[[bin]]
+name = "train-vfn"
+path = "src/bin/train_vfn.rs"
