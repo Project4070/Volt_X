@@ -103,23 +103,20 @@ impl AppState {
                     message: format!("conversations lock poisoned: {e}"),
                 })?;
 
-                if !convs.contains_key(&existing_id) {
+                convs.entry(existing_id).or_insert_with(|| {
                     // Create metadata for existing strand
                     let now = SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
                         .map(|d| d.as_micros() as u64)
                         .unwrap_or(0);
 
-                    convs.insert(
-                        existing_id,
-                        ConversationMeta {
-                            id: existing_id,
-                            created_at: now,
-                            last_message_at: now,
-                            message_count: 0,
-                        },
-                    );
-                }
+                    ConversationMeta {
+                        id: existing_id,
+                        created_at: now,
+                        last_message_at: now,
+                        message_count: 0,
+                    }
+                });
 
                 Ok(existing_id)
             }
@@ -171,16 +168,16 @@ impl AppState {
     /// state.update_conversation_metadata(conv_id);
     /// ```
     pub fn update_conversation_metadata(&self, id: u64) {
-        if let Ok(mut convs) = self.conversations.write() {
-            if let Some(meta) = convs.get_mut(&id) {
-                let now = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map(|d| d.as_micros() as u64)
-                    .unwrap_or(0);
+        if let Ok(mut convs) = self.conversations.write()
+            && let Some(meta) = convs.get_mut(&id)
+        {
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_micros() as u64)
+                .unwrap_or(0);
 
-                meta.last_message_at = now;
-                meta.message_count += 1;
-            }
+            meta.last_message_at = now;
+            meta.message_count += 1;
         }
     }
 }

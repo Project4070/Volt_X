@@ -94,20 +94,19 @@ fn self_play_puzzles_generated_and_graded() {
         for slot_idx in 0..output.slots.len() {
             if let Some(slot) = &mut output.slots[slot_idx]
                 && let Some(r0) = &slot.resolutions[0]
+                && let Ok(drift) = vfn.forward(r0)
             {
-                if let Ok(drift) = vfn.forward(r0) {
-                    let mut updated = [0.0f32; volt_core::SLOT_DIM];
-                    for k in 0..volt_core::SLOT_DIM {
-                        updated[k] = r0[k] + drift[k] * 0.1;
-                    }
-                    let norm: f32 = updated.iter().map(|x| x * x).sum::<f32>().sqrt();
-                    if norm > 1e-10 {
-                        for v in &mut updated {
-                            *v /= norm;
-                        }
-                    }
-                    slot.resolutions[0] = Some(updated);
+                let mut updated = [0.0f32; volt_core::SLOT_DIM];
+                for k in 0..volt_core::SLOT_DIM {
+                    updated[k] = r0[k] + drift[k] * 0.1;
                 }
+                let norm: f32 = updated.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 1e-10 {
+                    for v in &mut updated {
+                        *v /= norm;
+                    }
+                }
+                slot.resolutions[0] = Some(updated);
             }
         }
 

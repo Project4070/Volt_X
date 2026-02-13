@@ -306,22 +306,23 @@ impl Translator for StubTranslator {
         for i in 0..MAX_SLOTS {
             if let Some(slot_data) = &frame.slots[i] {
                 // Special handling for slot 8 (Result) — decode numeric result
-                if i == 8 && slot_data.role == SlotRole::Result {
-                    if let Some(vec) = slot_data.resolutions[0].as_ref() {
-                        // Math engine writes result in dim[0], valid flag in dim[1]
-                        let result_value = vec[0];
-                        let valid_flag = vec[1];
-                        if valid_flag > 0.5 {
-                            let word = if result_value.fract().abs() < 0.0001 {
-                                // Integer result
-                                format!("{}", result_value as i64)
-                            } else {
-                                // Floating point result
-                                format!("{:.4}", result_value)
-                            };
-                            slot_words.push((i, slot_data.role, word));
-                            continue;
-                        }
+                if i == 8
+                    && slot_data.role == SlotRole::Result
+                    && let Some(vec) = slot_data.resolutions[0].as_ref()
+                {
+                    // Math engine writes result in dim[0], valid flag in dim[1]
+                    let result_value = vec[0];
+                    let valid_flag = vec[1];
+                    if valid_flag > 0.5 {
+                        let word = if result_value.fract().abs() < 0.0001 {
+                            // Integer result
+                            format!("{}", result_value as i64)
+                        } else {
+                            // Floating point result
+                            format!("{:.4}", result_value)
+                        };
+                        slot_words.push((i, slot_data.role, word));
+                        continue;
                     }
                 }
 

@@ -125,6 +125,42 @@ impl Linear {
     pub(crate) fn bias_mut(&mut self) -> &mut [f32] {
         &mut self.bias
     }
+
+    /// Creates a Linear layer from existing weights and biases.
+    ///
+    /// Used by checkpoint loading (Phase 0.1). Validates that weight
+    /// dimensions match in_dim × out_dim and bias matches out_dim.
+    pub(crate) fn from_weights_and_bias(
+        weights: Vec<f32>,
+        bias: Vec<f32>,
+        in_dim: usize,
+        out_dim: usize,
+    ) -> Result<Self, volt_core::VoltError> {
+        if weights.len() != in_dim * out_dim {
+            return Err(volt_core::VoltError::LearnError {
+                message: format!(
+                    "Linear::from_weights_and_bias: expected {} weights, got {}",
+                    in_dim * out_dim,
+                    weights.len()
+                ),
+            });
+        }
+        if bias.len() != out_dim {
+            return Err(volt_core::VoltError::LearnError {
+                message: format!(
+                    "Linear::from_weights_and_bias: expected {} biases, got {}",
+                    out_dim,
+                    bias.len()
+                ),
+            });
+        }
+        Ok(Self {
+            weights,
+            bias,
+            in_dim,
+            out_dim,
+        })
+    }
 }
 
 #[cfg(test)]

@@ -26,12 +26,22 @@ pub mod stub;
 #[cfg(feature = "llm")]
 pub mod llm;
 
+#[cfg(feature = "code-training")]
+pub mod code_encoder;
+#[cfg(feature = "code-training")]
+pub mod code_decoder;
+#[cfg(feature = "code-training")]
+pub mod learned;
+
 pub use action_core::{ActionCore, ActionOutput, OutputModality, TextAction};
 pub use stub::StubTranslator;
 pub use volt_core;
 
 #[cfg(feature = "llm")]
 pub use llm::LlmTranslator;
+
+#[cfg(feature = "code-training")]
+pub use learned::LearnedTranslator;
 
 use volt_core::{ModuleInfo, SlotRole, TensorFrame, VoltError};
 

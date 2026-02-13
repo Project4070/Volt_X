@@ -319,6 +319,309 @@ impl Vfn {
             }),
         }
     }
+
+    // --- Checkpoint Save/Load (Phase 0.1) ---
+
+    /// Saves VFN weights to a binary checkpoint file.
+    ///
+    /// The checkpoint format includes magic bytes, version number,
+    /// CRC32 checksum, and all layer weights/biases. This allows
+    /// training resumption and model persistence.
+    ///
+    /// Binary format:
+    /// - Magic: "VFNC" (4 bytes)
+    /// - Version: u32 (4 bytes, currently 1)
+    /// - Checksum: CRC32 of all weights data (4 bytes)
+    /// - For each layer:
+    ///   - in_dim: u32 (4 bytes)
+    ///   - out_dim: u32 (4 bytes)
+    ///   - weights: [f32; in_dim * out_dim]
+    ///   - biases: [f32; out_dim]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VoltError::LearnError`] if the file cannot be written.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use volt_soft::vfn::Vfn;
+    ///
+    /// let vfn = Vfn::new_random(42);
+    /// vfn.save("vfn_checkpoint.bin").unwrap();
+    /// ```
+    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), VoltError> {
+        use std::fs::File;
+        use std::io::Write;
+
+        let mut file = File::create(path.as_ref()).map_err(|e| VoltError::LearnError {
+            message: format!("Failed to create checkpoint file: {}", e),
+        })?;
+
+        // Magic bytes: "VFNC"
+        file.write_all(b"VFNC")
+            .map_err(|e| VoltError::LearnError {
+                message: format!("Failed to write magic bytes: {}", e),
+            })?;
+
+        // Version: 1
+        file.write_all(&1u32.to_le_bytes())
+            .map_err(|e| VoltError::LearnError {
+                message: format!("Failed to write version: {}", e),
+            })?;
+
+        // Compute checksum of all weights
+        let checksum = self.compute_checksum();
+        file.write_all(&checksum.to_le_bytes())
+            .map_err(|e| VoltError::LearnError {
+                message: format!("Failed to write checksum: {}", e),
+            })?;
+
+        // Save each layer
+        self.save_layer(&mut file, &self.layer1)?;
+        self.save_layer(&mut file, &self.layer2)?;
+        self.save_layer(&mut file, &self.layer3)?;
+
+        Ok(())
+    }
+
+    /// Loads VFN weights from a binary checkpoint file.
+    ///
+    /// Validates magic bytes, version compatibility, and checksum
+    /// before loading weights. Ensures bitwise-identical restoration
+    /// of saved weights.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VoltError::LearnError`] if:
+    /// - File cannot be read
+    /// - Magic bytes don't match "VFNC"
+    /// - Version is incompatible
+    /// - Checksum verification fails
+    /// - Layer dimensions don't match expected VFN architecture
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use volt_soft::vfn::Vfn;
+    ///
+    /// let vfn = Vfn::load("vfn_checkpoint.bin").unwrap();
+    /// ```
+    pub fn load<P: AsRef<std::path::Path>>(path: P) -> Result<Self, VoltError> {
+        use std::fs::File;
+        use std::io::Read;
+
+        let mut file = File::open(path.as_ref()).map_err(|e| VoltError::LearnError {
+            message: format!("Failed to open checkpoint file: {}", e),
+        })?;
+
+        // Read and validate magic bytes
+        let mut magic = [0u8; 4];
+        file.read_exact(&mut magic)
+            .map_err(|e| VoltError::LearnError {
+                message: format!("Failed to read magic bytes: {}", e),
+            })?;
+        if &magic != b"VFNC" {
+            return Err(VoltError::LearnError {
+                message: format!(
+                    "Invalid checkpoint file: expected magic 'VFNC', got '{}'",
+                    String::from_utf8_lossy(&magic)
+                ),
+            });
+        }
+
+        // Read and validate version
+        let mut version_bytes = [0u8; 4];
+        file.read_exact(&mut version_bytes)
+            .map_err(|e| VoltError::LearnError {
+                message: format!("Failed to read version: {}", e),
+            })?;
+        let version = u32::from_le_bytes(version_bytes);
+        if version != 1 {
+            return Err(VoltError::LearnError {
+                message: format!(
+                    "Incompatible checkpoint version: expected 1, got {version}"
+                ),
+            });
+        }
+
+        // Read stored checksum
+        let mut checksum_bytes = [0u8; 4];
+        file.read_exact(&mut checksum_bytes)
+            .map_err(|e| VoltError::LearnError {
+                message: format!("Failed to read checksum: {}", e),
+            })?;
+        let stored_checksum = u32::from_le_bytes(checksum_bytes);
+
+        // Load layers
+        let layer1 = Self::load_layer(&mut file)?;
+        let layer2 = Self::load_layer(&mut file)?;
+        let layer3 = Self::load_layer(&mut file)?;
+
+        // Validate layer dimensions match VFN architecture
+        if layer1.in_dim() != SLOT_DIM || layer1.out_dim() != HIDDEN_DIM {
+            return Err(VoltError::LearnError {
+                message: format!(
+                    "Layer 1 dimensions mismatch: expected {}→{}, got {}→{}",
+                    SLOT_DIM,
+                    HIDDEN_DIM,
+                    layer1.in_dim(),
+                    layer1.out_dim()
+                ),
+            });
+        }
+        if layer2.in_dim() != HIDDEN_DIM || layer2.out_dim() != HIDDEN_DIM {
+            return Err(VoltError::LearnError {
+                message: format!(
+                    "Layer 2 dimensions mismatch: expected {}→{}, got {}→{}",
+                    HIDDEN_DIM,
+                    HIDDEN_DIM,
+                    layer2.in_dim(),
+                    layer2.out_dim()
+                ),
+            });
+        }
+        if layer3.in_dim() != HIDDEN_DIM || layer3.out_dim() != SLOT_DIM {
+            return Err(VoltError::LearnError {
+                message: format!(
+                    "Layer 3 dimensions mismatch: expected {}→{}, got {}→{}",
+                    HIDDEN_DIM,
+                    SLOT_DIM,
+                    layer3.in_dim(),
+                    layer3.out_dim()
+                ),
+            });
+        }
+
+        let vfn = Self {
+            layer1,
+            layer2,
+            layer3,
+        };
+
+        // Validate checksum matches
+        let computed_checksum = vfn.compute_checksum();
+        if computed_checksum != stored_checksum {
+            return Err(VoltError::LearnError {
+                message: format!(
+                    "Checksum mismatch: expected {stored_checksum}, got {computed_checksum}"
+                ),
+            });
+        }
+
+        Ok(vfn)
+    }
+
+    /// Computes CRC32 checksum of all VFN weights.
+    fn compute_checksum(&self) -> u32 {
+        let mut hasher = crc32fast::Hasher::new();
+
+        // Hash layer1 weights and biases
+        for &w in self.layer1.weights() {
+            hasher.update(&w.to_le_bytes());
+        }
+        for &b in self.layer1.bias() {
+            hasher.update(&b.to_le_bytes());
+        }
+
+        // Hash layer2
+        for &w in self.layer2.weights() {
+            hasher.update(&w.to_le_bytes());
+        }
+        for &b in self.layer2.bias() {
+            hasher.update(&b.to_le_bytes());
+        }
+
+        // Hash layer3
+        for &w in self.layer3.weights() {
+            hasher.update(&w.to_le_bytes());
+        }
+        for &b in self.layer3.bias() {
+            hasher.update(&b.to_le_bytes());
+        }
+
+        hasher.finalize()
+    }
+
+    /// Saves a single Linear layer to the file.
+    fn save_layer(
+        &self,
+        file: &mut std::fs::File,
+        layer: &Linear,
+    ) -> Result<(), VoltError> {
+        use std::io::Write;
+
+        // Write dimensions
+        file.write_all(&(layer.in_dim() as u32).to_le_bytes())
+            .map_err(|e| VoltError::LearnError {
+                message: format!("Failed to write layer in_dim: {}", e),
+            })?;
+        file.write_all(&(layer.out_dim() as u32).to_le_bytes())
+            .map_err(|e| VoltError::LearnError {
+                message: format!("Failed to write layer out_dim: {}", e),
+            })?;
+
+        // Write weights
+        for &w in layer.weights() {
+            file.write_all(&w.to_le_bytes())
+                .map_err(|e| VoltError::LearnError {
+                    message: format!("Failed to write weight: {}", e),
+                })?;
+        }
+
+        // Write biases
+        for &b in layer.bias() {
+            file.write_all(&b.to_le_bytes())
+                .map_err(|e| VoltError::LearnError {
+                    message: format!("Failed to write bias: {}", e),
+                })?;
+        }
+
+        Ok(())
+    }
+
+    /// Loads a single Linear layer from the file.
+    fn load_layer(file: &mut std::fs::File) -> Result<Linear, VoltError> {
+        use std::io::Read;
+
+        // Read dimensions
+        let mut dim_bytes = [0u8; 4];
+        file.read_exact(&mut dim_bytes)
+            .map_err(|e| VoltError::LearnError {
+                message: format!("Failed to read layer in_dim: {}", e),
+            })?;
+        let in_dim = u32::from_le_bytes(dim_bytes) as usize;
+
+        file.read_exact(&mut dim_bytes)
+            .map_err(|e| VoltError::LearnError {
+                message: format!("Failed to read layer out_dim: {}", e),
+            })?;
+        let out_dim = u32::from_le_bytes(dim_bytes) as usize;
+
+        // Read weights
+        let mut weights = Vec::with_capacity(in_dim * out_dim);
+        let mut f32_bytes = [0u8; 4];
+        for _ in 0..(in_dim * out_dim) {
+            file.read_exact(&mut f32_bytes)
+                .map_err(|e| VoltError::LearnError {
+                    message: format!("Failed to read weight: {}", e),
+                })?;
+            weights.push(f32::from_le_bytes(f32_bytes));
+        }
+
+        // Read biases
+        let mut bias = Vec::with_capacity(out_dim);
+        for _ in 0..out_dim {
+            file.read_exact(&mut f32_bytes)
+                .map_err(|e| VoltError::LearnError {
+                    message: format!("Failed to read bias: {}", e),
+                })?;
+            bias.push(f32::from_le_bytes(f32_bytes));
+        }
+
+        // Create Linear from loaded weights
+        Linear::from_weights_and_bias(weights, bias, in_dim, out_dim)
+    }
 }
 
 #[cfg(test)]
@@ -529,5 +832,154 @@ mod tests {
                 "per-layer forward should match full forward: {a} vs {b}"
             );
         }
+    }
+
+    // --- Checkpoint save/load tests (Phase 0.1) ---
+
+    #[test]
+    fn checkpoint_save_and_load() {
+        let temp_dir = std::env::temp_dir();
+        let checkpoint_path = temp_dir.join("vfn_test_checkpoint.bin");
+
+        // Create and save a VFN
+        let vfn = Vfn::new_random(12345);
+        vfn.save(&checkpoint_path).unwrap();
+
+        // Load it back
+        let loaded_vfn = Vfn::load(&checkpoint_path).unwrap();
+
+        // Verify forward pass produces identical results
+        let input = [0.42f32; SLOT_DIM];
+        let original_output = vfn.forward(&input).unwrap();
+        let loaded_output = loaded_vfn.forward(&input).unwrap();
+
+        for (a, b) in original_output.iter().zip(loaded_output.iter()) {
+            assert_eq!(*a, *b, "outputs should be bitwise identical");
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&checkpoint_path);
+    }
+
+    #[test]
+    fn checkpoint_load_invalid_magic_bytes() {
+        let temp_dir = std::env::temp_dir();
+        let checkpoint_path = temp_dir.join("vfn_bad_magic.bin");
+
+        // Write file with wrong magic bytes
+        std::fs::write(&checkpoint_path, b"BAAD").unwrap();
+
+        // Should error on load
+        let result = Vfn::load(&checkpoint_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid checkpoint"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&checkpoint_path);
+    }
+
+    #[test]
+    fn checkpoint_load_wrong_version() {
+        use std::io::Write;
+        let temp_dir = std::env::temp_dir();
+        let checkpoint_path = temp_dir.join("vfn_wrong_version.bin");
+
+        // Write file with wrong version
+        let mut file = std::fs::File::create(&checkpoint_path).unwrap();
+        file.write_all(b"VFNC").unwrap(); // Magic
+        file.write_all(&999u32.to_le_bytes()).unwrap(); // Wrong version
+
+        // Should error on load
+        let result = Vfn::load(&checkpoint_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Incompatible checkpoint version"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&checkpoint_path);
+    }
+
+    #[test]
+    fn checkpoint_checksum_detects_corruption() {
+        let temp_dir = std::env::temp_dir();
+        let checkpoint_path = temp_dir.join("vfn_corrupted.bin");
+
+        // Create and save a VFN
+        let vfn = Vfn::new_random(12345);
+        vfn.save(&checkpoint_path).unwrap();
+
+        // Corrupt the file (flip a bit in the weights section)
+        let mut data = std::fs::read(&checkpoint_path).unwrap();
+        // Magic(4) + Version(4) + Checksum(4) + in_dim(4) + out_dim(4) = 20 bytes
+        // Corrupt first weight byte
+        if data.len() > 24 {
+            data[24] ^= 0xFF; // Flip all bits
+            std::fs::write(&checkpoint_path, &data).unwrap();
+        }
+
+        // Should error on checksum mismatch
+        let result = Vfn::load(&checkpoint_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Checksum mismatch"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&checkpoint_path);
+    }
+
+    #[test]
+    fn checkpoint_multiple_save_load_cycles() {
+        let temp_dir = std::env::temp_dir();
+        let checkpoint_path = temp_dir.join("vfn_multi_cycle.bin");
+
+        // Create original VFN
+        let mut vfn = Vfn::new_random(99999);
+
+        // Perform 5 save/load cycles
+        for i in 0..5 {
+            // Save
+            vfn.save(&checkpoint_path).unwrap();
+
+            // Load
+            vfn = Vfn::load(&checkpoint_path).unwrap();
+
+            // Verify it still works
+            let input = [0.1f32 * (i + 1) as f32; SLOT_DIM];
+            let output = vfn.forward(&input).unwrap();
+            assert!(output.iter().all(|x| x.is_finite()));
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&checkpoint_path);
+    }
+
+    #[test]
+    fn checkpoint_preserves_trained_weights() {
+        use crate::nn::Linear;
+        let temp_dir = std::env::temp_dir();
+        let checkpoint_path = temp_dir.join("vfn_trained.bin");
+
+        // Create VFN and modify some weights
+        let mut vfn = Vfn::new_random(42);
+        let (in_d, out_d) = vfn.layer_shape(0).unwrap();
+        let w_deltas = vec![0.01; in_d * out_d];
+        let b_deltas = vec![0.01; out_d];
+        vfn.update_layer(0, &w_deltas, &b_deltas, 1.0).unwrap();
+
+        // Save
+        vfn.save(&checkpoint_path).unwrap();
+
+        // Load
+        let loaded_vfn = Vfn::load(&checkpoint_path).unwrap();
+
+        // Verify weights were preserved
+        let input = [0.5f32; SLOT_DIM];
+        let original_output = vfn.forward(&input).unwrap();
+        let loaded_output = loaded_vfn.forward(&input).unwrap();
+
+        for (a, b) in original_output.iter().zip(loaded_output.iter()) {
+            assert_eq!(*a, *b, "trained weights should be preserved exactly");
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&checkpoint_path);
     }
 }

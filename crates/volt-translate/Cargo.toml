@@ -19,6 +19,7 @@ serde_json = { workspace = true, optional = true }
 [features]
 default = []
 llm = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:serde_json"]
+code-training = ["dep:candle-core", "dep:candle-nn", "dep:tokenizers", "dep:serde_json"]
 
 [dev-dependencies]
 proptest.workspace = true

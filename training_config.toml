@@ -1,0 +1,81 @@
+# Volt X Training Configuration
+# This file defines paths to training data and training hyperparameters
+
+[paths]
+# Base data directory (on D: drive to save C: space)
+data_root = "D:\\VoltData"
+
+# Phase-specific paths
+phase0_data = "D:\\VoltData\\phase0"
+phase1_data = "D:\\VoltData\\phase1"
+phase2_data = "D:\\VoltData\\phase2"
+phase3_data = "D:\\VoltData\\phase3"
+phase4_data = "D:\\VoltData\\phase4"
+phase5_data = "D:\\VoltData\\phase5"
+
+# Specific dataset paths
+humaneval_path = "D:\\VoltData\\phase0\\humaneval\\data"
+mbpp_path = "D:\\VoltData\\phase0\\mbpp\\data"
+exercism_path = "D:\\VoltData\\phase0\\exercism\\python"
+the_stack_python = "D:\\VoltData\\phase0\\the_stack_sample"
+codesearchnet_path = "D:\\VoltData\\phase1\\codesearchnet"
+apps_path = "D:\\VoltData\\phase2\\apps"
+clrs_path = "D:\\VoltData\\phase2\\clrs"
+multiple_path = "D:\\VoltData\\phase5\\multiple"
+ds1000_path = "D:\\VoltData\\phase5\\ds1000"
+
+# Checkpoints and logs (can stay on C: drive, smaller)
+checkpoint_dir = "c:\\Volt_X\\checkpoints"
+log_dir = "c:\\Volt_X\\logs"
+tensorboard_dir = "c:\\Volt_X\\runs"
+
+[phase0]
+# Bootstrap configuration
+codebook_size = 65536
+slot_dim = 256
+num_slots = 16
+num_resolutions = 4
+
+[phase1]
+# Translator training
+encoder_params = 5_000_000
+decoder_params = 8_000_000
+learning_rate = 5e-4
+batch_size = 128
+max_steps = 100_000
+warmup_steps = 5_000
+
+[phase2]
+# VFN training
+vfn_params = 50_000_000
+learning_rate = 1e-4
+batch_size = 32
+max_steps = 500_000
+curriculum_stages = 4
+
+[phase3]
+# Hard Core calibration
+num_routing_labels = 10_000
+num_safety_examples = 2_600
+calibration_samples = 2_700
+
+[phase4]
+# Joint alignment
+rlvf_episodes = 100_000
+sleep_trigger_threshold = 5_000
+
+[phase5]
+# Scaling
+vfn_target_params = 500_000_000
+languages = ["python", "javascript", "java", "rust", "go"]
+the_stack_total_size = "120gb"
+
+[hardware]
+# Hardware configuration
+device = "cuda"  # or "cpu"
+mixed_precision = "bf16"
+gradient_checkpointing = true
+
+# Multi-GPU settings
+num_gpus = 1  # Adjust based on available hardware
+distributed_backend = "nccl"  # Windows: use "gloo" if NCCL unavailable

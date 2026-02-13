@@ -9,6 +9,7 @@ volt-bus.workspace = true
 thiserror.workspace = true
 rand.workspace = true
 rand_distr.workspace = true
+crc32fast.workspace = true
 
 # GPU-only dependencies (compiled only with `gpu` feature)
 candle-core = { workspace = true, optional = true }

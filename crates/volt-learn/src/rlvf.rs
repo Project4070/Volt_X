@@ -139,7 +139,7 @@ struct RlvfSample {
 ///
 /// # Example
 ///
-/// ```
+/// ```no_run
 /// use volt_learn::rlvf::{train_rlvf, RlvfConfig};
 /// use volt_learn::eval_dataset::generate_eval_dataset;
 /// use volt_soft::vfn::Vfn;

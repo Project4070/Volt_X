@@ -332,3 +332,94 @@ fn ff_training_with_store_frames() {
     let result = train_ff(&mut vfn, &samples, &config).unwrap();
     assert_eq!(result.layers_updated, 3);
 }
+
+// ---------------------------------------------------------------------------
+// Test: Phase 0.1 — VFN Checkpoint System
+// ---------------------------------------------------------------------------
+
+/// Phase 0.1 Integration Test: Train Forward-Forward epoch, save, load,
+/// verify bitwise identical.
+///
+/// This test validates the complete checkpoint pipeline:
+/// 1. Train VFN with Forward-Forward algorithm
+/// 2. Save checkpoint to disk
+/// 3. Load checkpoint from disk
+/// 4. Verify loaded VFN produces bitwise-identical outputs
+#[test]
+fn phase_0_1_vfn_checkpoint_roundtrip_after_training() {
+    let temp_dir = std::env::temp_dir();
+    let checkpoint_path = temp_dir.join("phase_0_1_vfn_checkpoint.bin");
+
+    // Step 1: Train VFN with Forward-Forward
+    let mut vfn = Vfn::new_random(12345);
+
+    // Create training samples
+    let mut samples = Vec::new();
+    for i in 0..50 {
+        samples.push(FfSample {
+            embedding: make_embedding(0.1, i),
+            is_positive: true,
+        });
+    }
+    for i in 0..50 {
+        samples.push(FfSample {
+            embedding: make_embedding(0.9, i + 100),
+            is_positive: false,
+        });
+    }
+
+    let config = FfConfig {
+        num_epochs: 5,
+        learning_rate: 0.005,
+        goodness_threshold: 2.0,
+        ..FfConfig::default()
+    };
+
+    // Train one epoch
+    let training_result = train_ff(&mut vfn, &samples, &config).unwrap();
+    assert_eq!(training_result.layers_updated, 3);
+
+    // Record forward pass output before saving
+    let test_input = [0.42f32; SLOT_DIM];
+    let output_before_save = vfn.forward(&test_input).unwrap();
+
+    // Step 2: Save checkpoint
+    vfn.save(&checkpoint_path).expect("Failed to save VFN checkpoint");
+
+    // Step 3: Load checkpoint
+    let loaded_vfn = Vfn::load(&checkpoint_path).expect("Failed to load VFN checkpoint");
+
+    // Step 4: Verify bitwise identical
+    let output_after_load = loaded_vfn.forward(&test_input).unwrap();
+
+    // Check bitwise identical outputs
+    for (i, (&before, &after)) in output_before_save
+        .iter()
+        .zip(output_after_load.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            before, after,
+            "Output mismatch at index {i}: before={before}, after={after}"
+        );
+    }
+
+    // Additional verification: test with multiple different inputs
+    for seed in [0.1f32, 0.5, 0.9, -0.3, 0.0] {
+        let input = [seed; SLOT_DIM];
+        let original = vfn.forward(&input).unwrap();
+        let loaded = loaded_vfn.forward(&input).unwrap();
+
+        for (a, b) in original.iter().zip(loaded.iter()) {
+            assert_eq!(
+                *a, *b,
+                "Outputs differ for input seed {seed}: {a} vs {b}"
+            );
+        }
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_file(&checkpoint_path);
+
+    println!("✓ Phase 0.1 complete: VFN checkpoint save/load preserves trained weights");
+}

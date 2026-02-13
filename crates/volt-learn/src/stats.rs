@@ -375,10 +375,12 @@ mod tests {
 
     #[test]
     fn proportions_sum_to_one() {
-        let mut dist = TopicDistribution::default();
-        dist.query = 3;
-        dist.command = 5;
-        dist.creative = 2;
+        let dist = TopicDistribution {
+            query: 3,
+            command: 5,
+            creative: 2,
+            ..Default::default()
+        };
         let props = dist.proportions();
         let sum: f32 = props.values().sum();
         assert!((sum - 1.0).abs() < 0.01);

@@ -548,3 +548,67 @@ WASM plugin host (rejected: adds wasmtime dependency + performance
 overhead for CPU-bound strand logic, better suited for untrusted
 third-party code in a future milestone), trait objects with `inventory`
 crate (rejected: adds external dependency, magic linker tricks).
+
+## ADR-028: Codebook Initialization Pipeline (2026-02-13)
+
+**Decision:** Implement codebook initialization as a streaming encode +
+brute-force mini-batch k-means pipeline in `volt-learn`. New modules:
+`stack_corpus` (streaming JSONL reader for The Stack), `kmeans` (mini-batch
+k-means with k-means++ initialization), `codebook_init` (pipeline
+orchestration). K-means implemented from scratch (~300 lines) rather than
+using an external crate.
+**Reason:** The codebook's 65,536 entries must cover code's actual embedding
+space, not random/NL distributions. Mini-batch k-means with brute-force
+assignment is simple and performant at k=65K, dim=256 (~0.4ms/vector),
+making HNSW-accelerated assignment unnecessary. `rand` added to `volt-learn`
+for k-means++ random sampling (already a workspace dependency).
+**Alternatives considered:** `linfa-clustering` crate (rejected: heavy
+dependency tree, not in workspace, algorithm is simple to implement),
+HNSW-accelerated nearest-centroid assignment (rejected: marginal speed
+benefit at 65K scale, adds complexity), GPU k-means in `volt-soft`
+(rejected: Phase 0 is CPU-only, one-time initialization).
+
+## ADR-029: Code Attention Bias (2026-02-13)
+
+**Decision:** Add an optional additive attention bias to `SlotAttention`
+— a `[[f32; MAX_SLOTS]; MAX_SLOTS]` matrix added to pre-softmax logits
+based on slot position. The code-specific bias in `code_attention.rs`
+encodes structural priors (e.g., Function S0 ↔ Arguments S2 = +2.0).
+**Reason:** Code has strong positional structure that random Xavier
+initialization ignores. An additive bias is the correct mechanism for
+position-dependent priors because Q/K/V weight matrices are shared
+across all 16 slots (content-based, not position-based). Unlike Q/K/V
+initialization, an additive bias persists through training and is
+composable with learned attention patterns (similar to ALiBi in
+transformers). No new dependencies required.
+**Alternatives considered:** Q/K/V weight initialization to embed the
+bias (rejected: shared weight matrices cannot encode position-dependent
+priors — `Q_i = W_Q · x_i` makes all queries content-dependent, not
+position-dependent), per-slot Q/K/V projections (rejected: 16× weight
+increase, massive architectural change), learned slot embeddings added
+before projection (deferred: good idea but larger scope than Phase 0.4).
+
+## ADR-030: Lightweight CNN Encoder for Phase 1 (2026-02-13)
+
+**Decision:** Train a lightweight ~5M parameter CNN encoder (BPE →
+Embedding(32768, 128) → 3×Conv1D → Role Head + Embed Head) and a ~7M
+parameter non-autoregressive decoder for Phase 1 code translation, rather
+than using the existing LlmTranslator (Qwen3-0.6B backbone, ~600M params).
+Uses InfoNCE contrastive loss on CodeSearchNet (code, docstring) pairs with
+heuristic role grounding supervision. New `code-training` feature flag
+(separate from `llm`) — only requires candle-core, candle-nn, tokenizers.
+**Reason:** The plan explicitly targets a lightweight encoder trainable from
+scratch in ~30 GPU-hours on a single RTX 5090 Mobile. The LlmTranslator
+requires downloading a frozen 600M param backbone and cannot learn
+code-specific slot roles. A CNN encoder has three advantages: (1) no model
+download, (2) fast training from scratch, (3) role head directly classifies
+tokens into the 16 PropBank-inspired slot roles (Agent, Patient, Location,
+etc.) that define TensorFrame structure. The non-autoregressive decoder
+predicts all output positions independently, avoiding the complexity of
+autoregressive decoding in candle (which lacks built-in GRU/LSTM).
+**Alternatives considered:** LlmTranslator with Qwen3 backbone (deferred to
+Phase 5: requires ~1.2GB download, frozen backbone cannot learn slot roles),
+autoregressive GRU decoder (rejected: candle-nn lacks GRU, would require
+manual implementation), transformer encoder instead of CNN (rejected: heavier
+for same embedding quality at this model scale, and self-attention is
+unnecessary when Conv1D with k=3,5,7 provides sufficient receptive field).

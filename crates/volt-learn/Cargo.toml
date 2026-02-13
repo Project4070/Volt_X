@@ -12,6 +12,36 @@ volt-translate.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rand.workspace = true
+
+# Code-training-only dependencies (compiled only with `code-training` feature)
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+
+[features]
+default = []
+code-training = ["volt-translate/code-training", "dep:candle-core", "dep:candle-nn", "dep:tokenizers"]
 
 [dev-dependencies]
 proptest.workspace = true
+tempfile = "3"
+
+[[bin]]
+name = "codebook-init"
+path = "src/bin/codebook_init.rs"
+
+[[bin]]
+name = "train-tokenizer"
+path = "src/bin/train_tokenizer.rs"
+required-features = ["code-training"]
+
+[[bin]]
+name = "train-encoder"
+path = "src/bin/train_encoder.rs"
+required-features = ["code-training"]
+
+[[bin]]
+name = "train-decoder"
+path = "src/bin/train_decoder.rs"
+required-features = ["code-training"]

@@ -40,6 +40,7 @@ mod nn;
 
 // Public modules — always compiled (CPU path)
 pub mod attention;
+pub mod code_attention;
 pub mod diffusion;
 pub mod ghost_attention;
 pub mod rar;

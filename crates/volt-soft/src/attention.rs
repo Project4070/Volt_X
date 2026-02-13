@@ -17,6 +17,10 @@ use volt_core::{VoltError, MAX_SLOTS, SLOT_DIM};
 /// learned linear projections. Attention weights determine how
 /// much each slot influences every other slot.
 ///
+/// An optional `attention_bias` provides a persistent additive
+/// bias to pre-softmax logits based on slot position. This encodes
+/// structural priors (e.g., "Function should attend to Arguments").
+///
 /// # Example
 ///
 /// ```
@@ -39,6 +43,10 @@ pub struct SlotAttention {
     wk: Linear,
     wv: Linear,
     scale: f32,
+    /// Optional additive attention bias indexed by slot position.
+    /// `attention_bias[i][j]` is added to the pre-softmax logit
+    /// for query slot i attending to key slot j.
+    attention_bias: Option<[[f32; MAX_SLOTS]; MAX_SLOTS]>,
 }
 
 impl std::fmt::Debug for SlotAttention {
@@ -67,6 +75,39 @@ impl SlotAttention {
             wk: Linear::new_xavier(&mut rng, SLOT_DIM, SLOT_DIM),
             wv: Linear::new_xavier(&mut rng, SLOT_DIM, SLOT_DIM),
             scale: 1.0 / (SLOT_DIM as f32).sqrt(),
+            attention_bias: None,
+        }
+    }
+
+    /// Creates a new attention module with Xavier/Glorot random initialization
+    /// and an additive attention bias.
+    ///
+    /// The bias is a `[MAX_SLOTS × MAX_SLOTS]` matrix added to pre-softmax
+    /// logits based on slot position. `bias[i][j]` increases the attention
+    /// weight from query slot `i` to key slot `j`. This encodes persistent
+    /// structural priors that survive training.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_soft::attention::SlotAttention;
+    /// use volt_core::{MAX_SLOTS, SLOT_DIM};
+    ///
+    /// // Bias slot 0 to attend strongly to slot 1
+    /// let mut bias = [[0.0f32; MAX_SLOTS]; MAX_SLOTS];
+    /// bias[0][1] = 2.0;
+    /// bias[1][0] = 2.0;
+    ///
+    /// let attn = SlotAttention::new_with_bias(42, bias);
+    /// ```
+    pub fn new_with_bias(seed: u64, bias: [[f32; MAX_SLOTS]; MAX_SLOTS]) -> Self {
+        let mut rng = Rng::new(seed);
+        Self {
+            wq: Linear::new_xavier(&mut rng, SLOT_DIM, SLOT_DIM),
+            wk: Linear::new_xavier(&mut rng, SLOT_DIM, SLOT_DIM),
+            wv: Linear::new_xavier(&mut rng, SLOT_DIM, SLOT_DIM),
+            scale: 1.0 / (SLOT_DIM as f32).sqrt(),
+            attention_bias: Some(bias),
         }
     }
 
@@ -118,11 +159,14 @@ impl SlotAttention {
 
         // For each query slot, compute attention weights and aggregate values
         for (qi, &(slot_i, _)) in active.iter().enumerate() {
-            // Compute attention scores: Q_i · K_j / sqrt(d)
+            // Compute attention scores: Q_i · K_j / sqrt(d) + bias[i][j]
             let mut scores = vec![0.0f32; active.len()];
-            for (kj, _) in active.iter().enumerate() {
+            for (kj, &(slot_j, _)) in active.iter().enumerate() {
                 let dot: f32 = qs[qi].iter().zip(ks[kj].iter()).map(|(a, b)| a * b).sum();
                 scores[kj] = dot * self.scale;
+                if let Some(ref bias) = self.attention_bias {
+                    scores[kj] += bias[slot_i][slot_j];
+                }
             }
 
             // Softmax with numerical stability (subtract max)
@@ -173,6 +217,22 @@ impl SlotAttention {
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     pub(crate) fn projections(&self) -> (&Linear, &Linear, &Linear) {
         (&self.wq, &self.wk, &self.wv)
+    }
+
+    /// Returns the attention bias matrix, if set.
+    ///
+    /// Used to inspect or verify the structural prior.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_soft::attention::SlotAttention;
+    ///
+    /// let attn = SlotAttention::new_random(42);
+    /// assert!(attn.attention_bias().is_none());
+    /// ```
+    pub fn attention_bias(&self) -> Option<&[[f32; MAX_SLOTS]; MAX_SLOTS]> {
+        self.attention_bias.as_ref()
     }
 }
 
@@ -280,5 +340,90 @@ mod tests {
         let debug = format!("{:?}", attn);
         assert!(debug.contains("SlotAttention"));
         assert!(debug.contains("dim=256"));
+    }
+
+    #[test]
+    fn new_random_has_no_bias() {
+        let attn = SlotAttention::new_random(42);
+        assert!(attn.attention_bias().is_none());
+    }
+
+    #[test]
+    fn new_with_bias_stores_bias() {
+        let mut bias = [[0.0f32; MAX_SLOTS]; MAX_SLOTS];
+        bias[0][1] = 2.0;
+        bias[1][0] = 2.0;
+        let attn = SlotAttention::new_with_bias(42, bias);
+        let stored = attn.attention_bias().unwrap();
+        assert_eq!(stored[0][1], 2.0);
+        assert_eq!(stored[1][0], 2.0);
+        assert_eq!(stored[0][0], 0.0);
+    }
+
+    #[test]
+    fn zero_bias_matches_no_bias() {
+        let bias = [[0.0f32; MAX_SLOTS]; MAX_SLOTS];
+        let attn_random = SlotAttention::new_random(42);
+        let attn_biased = SlotAttention::new_with_bias(42, bias);
+
+        let mut states = [const { None }; MAX_SLOTS];
+        states[0] = Some(random_vector(100));
+        states[1] = Some(random_vector(200));
+        states[2] = Some(random_vector(300));
+
+        let msg_random = attn_random.forward(&states).unwrap();
+        let msg_biased = attn_biased.forward(&states).unwrap();
+
+        for i in 0..MAX_SLOTS {
+            for d in 0..SLOT_DIM {
+                assert!(
+                    (msg_random[i][d] - msg_biased[i][d]).abs() < 1e-6,
+                    "slot {i} dim {d}: random={} biased={}",
+                    msg_random[i][d],
+                    msg_biased[i][d]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bias_changes_attention_output() {
+        // Strong bias from slot 0 to slot 1 should change messages
+        let mut bias = [[0.0f32; MAX_SLOTS]; MAX_SLOTS];
+        bias[0][1] = 5.0; // Very strong bias
+        let attn_random = SlotAttention::new_random(42);
+        let attn_biased = SlotAttention::new_with_bias(42, bias);
+
+        let mut states = [const { None }; MAX_SLOTS];
+        states[0] = Some(random_vector(100));
+        states[1] = Some(random_vector(200));
+        states[2] = Some(random_vector(300));
+
+        let msg_random = attn_random.forward(&states).unwrap();
+        let msg_biased = attn_biased.forward(&states).unwrap();
+
+        // Slot 0's message should differ with strong bias toward slot 1
+        assert_ne!(msg_random[0], msg_biased[0]);
+    }
+
+    #[test]
+    fn biased_attention_output_is_finite() {
+        let mut bias = [[0.0f32; MAX_SLOTS]; MAX_SLOTS];
+        for i in 0..8 {
+            for j in 0..8 {
+                bias[i][j] = 1.0;
+            }
+        }
+        let attn = SlotAttention::new_with_bias(42, bias);
+
+        let mut states = [const { None }; MAX_SLOTS];
+        for i in 0..8 {
+            states[i] = Some(random_vector(i as u64 + 100));
+        }
+
+        let messages = attn.forward(&states).unwrap();
+        for msg in &messages {
+            assert!(msg.iter().all(|x| x.is_finite()));
+        }
     }
 }

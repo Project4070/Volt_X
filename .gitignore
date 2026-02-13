@@ -27,6 +27,8 @@ ehthumbs.db
 # Data and models (too large for git)
 codebook.bin
 models/
+checkpoints/
+*.safetensors
 hidden_states_cache.pt
 data/models/*.bin
 data/models/*.pt

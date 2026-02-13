@@ -24,6 +24,13 @@
 //! - [`self_play`] — Logic puzzle generation and grading
 //! - [`rlvf`] — REINFORCE with baseline training loop
 //!
+//! ## Phase 0: Code Training (Before B200)
+//!
+//! - [`code_dataset`] — Unified dataset loader for code problems (HumanEval, MBPP, APPS)
+//! - [`stack_corpus`] — Streaming JSONL reader for The Stack dataset
+//! - [`kmeans`] — Mini-batch k-means with k-means++ initialization
+//! - [`codebook_init`] — Codebook initialization pipeline (encode → cluster → save)
+//!
 //! ## Three Timescales of Learning
 //!
 //! - **Instant Learning** (ms–min): Strand vector updates in RAM, no GPU needed
@@ -36,6 +43,18 @@
 //! - Forward-Forward training uses same VRAM budget as inference.
 //! - No backpropagation — layer-local updates only.
 //! - No async code — pure synchronous logic.
+
+// Phase 0: Code Training
+pub mod code_dataset;
+pub mod stack_corpus;
+pub mod kmeans;
+pub mod codebook_init;
+
+// Phase 1: Translator Training
+pub mod codesearchnet;
+pub mod role_labels;
+#[cfg(feature = "code-training")]
+pub mod contrastive;
 
 // Milestone 5.1: Learning Event Logging
 pub mod event;
@@ -76,3 +95,13 @@ pub use reward::{RewardConfig, RewardOutcome, compute_reward};
 pub use calibration::{CalibrationBin, CalibrationResult, compute_calibration};
 pub use self_play::{PuzzleType, LogicPuzzle, PuzzleResult, generate_puzzles, grade_puzzle};
 pub use rlvf::{RlvfConfig, RlvfResult, train_rlvf};
+
+// Phase 0 re-exports
+pub use code_dataset::{CodeProblem, CodeDataset};
+pub use stack_corpus::{StackEntry, StackCorpusReader};
+pub use kmeans::{KMeansConfig, KMeansResult, mini_batch_kmeans};
+pub use codebook_init::{CodebookInitConfig, CodebookInitResult, init_codebook_from_corpus};
+
+// Phase 1 re-exports
+pub use codesearchnet::{CsnRecord, CsnDataset};
+pub use role_labels::label_code_tokens;

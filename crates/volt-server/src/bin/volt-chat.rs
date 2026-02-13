@@ -71,6 +71,7 @@ impl ChatClient {
     }
 
     /// Create a new conversation
+    #[allow(dead_code)]
     fn create_conversation(&mut self) -> Result<u64, Box<dyn Error>> {
         let url = format!("{}/api/conversations", self.base_url);
         let response = self.client.post(&url).send()?;
