@@ -193,7 +193,8 @@ fn phase_0_3_full_pipeline_synthetic() {
             log_interval: 50,
         };
 
-        let result = init_codebook_from_corpus(&config).unwrap();
+        let translator = volt_translate::StubTranslator::new();
+        let result = init_codebook_from_corpus(&config, &translator).unwrap();
 
         // Verify results
         assert!(result.files_processed > 0, "should process some files");
@@ -239,7 +240,8 @@ fn phase_0_3_codebook_roundtrip_after_init() {
             log_interval: 0,
         };
 
-        let result = init_codebook_from_corpus(&config).unwrap();
+        let translator = volt_translate::StubTranslator::new();
+        let result = init_codebook_from_corpus(&config, &translator).unwrap();
 
         // Load codebook and verify quantization works
         let codebook = volt_bus::codebook::Codebook::load(&output_path).unwrap();

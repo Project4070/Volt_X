@@ -20,12 +20,50 @@ verification) on a domain with:
 
 ---
 
-## Phase 0: Bootstrap (No GPU Required)
+## Execution Order
+
+Phases are NOT strictly sequential — some steps were reordered based on
+actual dependencies. Here is the true execution order:
+
+```text
+DONE ─────────────────────────────────────────────────────
+  0.1  VFN Checkpoint          (infrastructure, no deps)
+  0.2  Code Dataset Pipeline   (infrastructure, no deps)
+  0.4  Code Attention Bias     (infrastructure, no deps)
+  1.1  Code Encoder            (needs 0.2 data)
+  1.2  Code Decoder            (needs 1.1 encoder)
+  1.3  Role Grounding          (joint with 1.1)
+
+NOW ──────────────────────────────────────────────────────
+  2    VFN Training            (needs 1.1 encoder for frames)
+       ↳ Does NOT need codebook — VFN trains on raw frames
+
+BEFORE PHASE 3 ───────────────────────────────────────────
+  0.3  Codebook k-means        (needs current encoder, ~30 min CPU)
+       ↳ Deferred because codebook must match encoder's space
+       ↳ Needed for HNSW retrieval + VoltDB memory (Phase 3+)
+       ↳ If encoder changes later → rebuild (~30 min, cheap)
+
+LATER ────────────────────────────────────────────────────
+  3    Hard Core Calibration   (needs codebook for HNSW retrieval)
+  4    Joint Alignment         (needs everything: VFN + codebook + router)
+  5    Scale & Benchmark       (may retrain encoder → rebuild codebook)
+```
+
+**Key insight:** The codebook is for `volt-bus` vector quantization and
+HNSW nearest-neighbor lookup. VFN training (Phase 2) operates directly
+on TensorFrames and doesn't use the codebook at all. So there's no
+reason to generate it until Phase 3 needs it.
+
+---
+
+## Phase 0: Bootstrap (No GPU Required) — COMPLETE (except 0.3 k-means)
 
 **Goal:** Build the code-specific data foundation.
 
 **Duration:** 2–3 weeks
 **Hardware:** CPU only (any modern machine)
+**Status:** 0.1, 0.2, 0.4 done. 0.3 code done, k-means deferred to before Phase 3.
 
 ### 0.1 — VFN Checkpoint System **DONE**
 
@@ -69,36 +107,52 @@ and stored.
 
 ---
 
-### 0.3 — Codebook Initialization from Code Corpus
+### 0.3 — Codebook Initialization from Code Corpus **DEFERRED → run before Phase 3**
 
-**What:** Populate the 65,536-entry codebook from code embeddings
-instead of natural language text.
-**Why:** Code has different distribution than natural language — more
-structured, uses symbols (brackets, operators), different token
-frequencies. The codebook must cover code's actual embedding space.
+**What:** Populate the 65,536-entry codebook from code embeddings.
+
+**Why:** The codebook provides vector quantization for `volt-bus` and
+powers HNSW nearest-neighbor lookup in VoltDB. It must cover the
+embedding space of whatever encoder is active at inference time.
+
+**Status:** Code infrastructure complete (StackCorpusReader, mini-batch
+k-means, codebook_init pipeline, CLI binary). The actual k-means run
+is deferred because:
+
+1. The codebook centroids must live in the **same embedding space** as
+   the active encoder — building with StubTranslator then switching to
+   the learned encoder would invalidate it
+2. VFN training (Phase 2) does NOT use the codebook — it operates on
+   raw TensorFrames
+3. The codebook is first needed in Phase 3 (HNSW retrieval strand) and
+   Phase 4 (end-to-end pipeline with memory)
+
+**When to run:** Right before Phase 3, using whatever encoder is current.
+If the encoder changes later (Phase 5), rebuild — it's a ~30 min CPU job.
+
+**Command (with learned encoder):**
+
+```bash
+cargo run --release -p volt-learn --features code-training --bin codebook-init -- ^
+  --corpus "D:\VoltData\phase0\the_stack_sample\python\python_sample.jsonl" ^
+  --tokenizer "checkpoints\code_tokenizer.json" ^
+  --encoder "checkpoints\code_encoder.safetensors" ^
+  --decoder "checkpoints\code_decoder.safetensors" ^
+  --max-files 100000 --k 65536 --output "checkpoints\codebook_code.bin"
+```
 
 **Scope:**
-- Download The Stack (Python subset, ~50GB → sample 1M files)
-- Encode code through stub translator (treat code as structured text)
-- Collect all slot embeddings (16 slots × 1M files = 16M vectors)
-- Run k-means (k=65,536) on collected vectors
-- Use centroids as codebook entries
+
+- Encode 100K code files through learned encoder (Phase 1 CNN)
+- Collect all R0 slot embeddings (16 slots x 100K files = ~1.6M vectors)
+- Run mini-batch k-means (k=65,536) on collected vectors
+- Save centroids as codebook entries
 - Rebuild HNSW index
 
-**Dataset:**
-- **The Stack (Python):** ~470GB total → sample 50GB
-- **Deduplication:** Use built-in deduplicated version
-- **Filtering:** Remove minified code, generated files, test fixtures
-- **Target:** 1M Python files (~500-1000 lines each)
+**Dataset:** The Stack Python (already downloaded, 43.8 GB at `D:\VoltData\phase0\the_stack_sample\`)
 
-**Deliverable:** Codebook where nearest-neighbor lookup on code
-embeddings returns semantically coherent entries. Quantization error
-below threshold (mean L2 distance < 0.05).
-
-**Processing time:** ~24 hours CPU (k-means on 16M vectors)
+**Processing time:** ~30 min CPU (encoding) + ~1 hour CPU (k-means)
 **GPU hours:** 0
-
-**Note** The code implementation has been done, but K-means processing is deferred to after the phase 1 translator training
 
 ---
 
@@ -273,12 +327,13 @@ cross-entropy loss weighted at 0.3× contrastive + 0.7× role classification.
 
 ---
 
-## Phase 2: Soft Core Training (Moderate GPU)
+## Phase 2: Soft Core Training (Moderate GPU) — NEXT
 
 **Goal:** Train VFN so RAR converges to correct code solutions.
 
 **Duration:** 4–6 weeks
 **Hardware:** 2–4× RTX 4090 or 1–2× H100
+**Prerequisites:** Phase 1 encoder (done). Does NOT need codebook.
 
 ### 2.1 — VFN Flow Matching on Code Tasks
 

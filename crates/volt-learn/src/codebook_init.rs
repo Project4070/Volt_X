@@ -8,7 +8,7 @@
 //! # Pipeline
 //!
 //! ```text
-//! The Stack JSONL → StackCorpusReader → StubTranslator.encode()
+//! The Stack JSONL → StackCorpusReader → Translator.encode()
 //!     → extract R0 slot vectors → subsample → mini-batch k-means
 //!     → Codebook::from_entries(centroids) → save()
 //! ```
@@ -19,6 +19,7 @@
 //! use std::path::PathBuf;
 //! use volt_learn::codebook_init::{CodebookInitConfig, init_codebook_from_corpus};
 //! use volt_learn::kmeans::KMeansConfig;
+//! use volt_translate::StubTranslator;
 //!
 //! let config = CodebookInitConfig {
 //!     corpus_path: PathBuf::from("D:/VoltData/phase0/the_stack_sample"),
@@ -28,7 +29,8 @@
 //!     output_path: PathBuf::from("checkpoints/codebook_code.bin"),
 //!     log_interval: 10_000,
 //! };
-//! let result = init_codebook_from_corpus(&config).unwrap();
+//! let translator = StubTranslator::new();
+//! let result = init_codebook_from_corpus(&config, &translator).unwrap();
 //! println!("Mean quantization error: {:.4}", result.mean_quantization_error);
 //! ```
 
@@ -38,7 +40,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use volt_bus::codebook::Codebook;
 use volt_core::{TensorFrame, VoltError, MAX_SLOTS, SLOT_DIM};
-use volt_translate::{StubTranslator, Translator};
+use volt_translate::Translator;
 
 use crate::kmeans::{self, KMeansConfig};
 use crate::stack_corpus::StackCorpusReader;
@@ -171,13 +173,16 @@ fn open_corpus(path: &Path) -> Result<StackCorpusReader, VoltError> {
 ///
 /// ```no_run
 /// use volt_learn::codebook_init::{CodebookInitConfig, init_codebook_from_corpus};
+/// use volt_translate::StubTranslator;
 ///
 /// let config = CodebookInitConfig::default();
-/// let result = init_codebook_from_corpus(&config).unwrap();
+/// let translator = StubTranslator::new();
+/// let result = init_codebook_from_corpus(&config, &translator).unwrap();
 /// assert!(result.mean_quantization_error < 0.1);
 /// ```
 pub fn init_codebook_from_corpus(
     config: &CodebookInitConfig,
+    translator: &dyn Translator,
 ) -> Result<CodebookInitResult, VoltError> {
     // Step 1: Open corpus
     eprintln!(
@@ -185,7 +190,6 @@ pub fn init_codebook_from_corpus(
         config.corpus_path.display()
     );
     let reader = open_corpus(&config.corpus_path)?;
-    let translator = StubTranslator::new();
 
     // Step 2: Encode files and collect vectors
     let mut all_vectors: Vec<[f32; SLOT_DIM]> = Vec::new();
@@ -337,6 +341,7 @@ pub fn init_codebook_from_corpus(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use volt_translate::StubTranslator;
 
     #[test]
     fn extract_slot_vectors_empty_frame() {
