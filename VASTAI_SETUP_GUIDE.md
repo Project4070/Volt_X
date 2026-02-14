@@ -3,8 +3,9 @@
 **Instance:** Single RTX 5090 (32 GB) + AMD EPYC Rome (192 cores), $0.20/hr
 **Goal:** Minimize billable prep time. Every minute the instance is on costs money.
 **Strategy:** Pre-stage locally, then run three parallel tracks on the instance.
+**Network:** Gigabit Ethernet (upload ~110 MB/s effective).
 
-**Estimated prep time:** ~15–20 minutes from SSH to training started.
+**Estimated prep time:** ~25 minutes from SSH to training started.
 **Estimated training cost:** $60–100 (300–500 GPU-hours for Phase 2.1).
 
 ---
@@ -14,10 +15,10 @@
 Everything in this section is done on your local Windows machine while you
 are NOT paying for cloud time.
 
-### 1. Stage upload files into one directory
+### 1. Stage the small upload files
 
-Create a staging directory so uploads are a single command, not six
-individual SCPs.
+Checkpoints and Phase 2 datasets are tiny (~1.3 GB). Tar them for a
+single-command upload.
 
 ```powershell
 # Create staging directory
@@ -25,49 +26,54 @@ mkdir C:\VoltStaging
 mkdir C:\VoltStaging\checkpoints
 mkdir C:\VoltStaging\data
 
-# Copy checkpoints (~44 MB total)
-copy c:\Volt_X\checkpoints\code_tokenizer.json    C:\VoltStaging\checkpoints\
+# Checkpoints (~44 MB total)
+copy c:\Volt_X\checkpoints\code_tokenizer.json     C:\VoltStaging\checkpoints\
 copy c:\Volt_X\checkpoints\code_encoder.safetensors C:\VoltStaging\checkpoints\
 copy c:\Volt_X\checkpoints\code_decoder.safetensors C:\VoltStaging\checkpoints\
 
-# Copy Phase 2 datasets (~1.3 GB total)
-copy D:\VoltData\phase0\code_training_combined.jsonl          C:\VoltStaging\data\
-copy D:\VoltData\phase0\humaneval\data\humaneval.jsonl        C:\VoltStaging\data\
-copy D:\VoltData\phase0\mbpp\data\mbpp.jsonl                  C:\VoltStaging\data\
+# Phase 2 datasets
+copy D:\VoltData\phase0\code_training_combined.jsonl             C:\VoltStaging\data\
+copy D:\VoltData\phase0\humaneval\data\humaneval.jsonl           C:\VoltStaging\data\
+copy D:\VoltData\phase0\mbpp\data\mbpp.jsonl                     C:\VoltStaging\data\
 copy D:\VoltData\phase2\apps\data\apps_introductory_train.jsonl  C:\VoltStaging\data\
 copy D:\VoltData\phase2\apps\data\apps_interview_train.jsonl     C:\VoltStaging\data\
 copy D:\VoltData\phase2\apps\data\apps_competition_train.jsonl   C:\VoltStaging\data\
-```
 
-### 2. Compress the staging directory
-
-Compressing before upload saves transfer time, especially on slow
-upstream connections. 1.3 GB of JSONL compresses to ~200–400 MB.
-
-```powershell
-# Using 7-Zip (install from https://7-zip.org if not present)
-cd C:\
-& "C:\Program Files\7-Zip\7z.exe" a -ttar VoltStaging.tar VoltStaging\
-& "C:\Program Files\7-Zip\7z.exe" a -tgzip VoltStaging.tar.gz VoltStaging.tar
-
-# Or if you have tar available (Windows 10+):
+# Compress (JSONL compresses well, saves a few seconds of upload)
 tar -czf C:\VoltStaging.tar.gz -C C:\ VoltStaging
-
-# Result: C:\VoltStaging.tar.gz (~200-400 MB)
 ```
 
-### 3. Verify files
+### 2. Verify local file readiness
 
 ```powershell
-# Quick sanity check — all 9 files present?
+# Small files — 9 files present?
 dir C:\VoltStaging\checkpoints\   # 3 files: tokenizer, encoder, decoder
 dir C:\VoltStaging\data\          # 6 files: combined, humaneval, mbpp, 3x apps
+
+# Stack datasets — curated versions on D: drive
+dir D:\VoltData\phase0\the_stack_sample\python\python_sample.jsonl   # ~50 GB
+dir D:\VoltData\phase5\the_stack_full\                               # ~120 GB
+# ^^^ Adjust this path if your 120 GB curated Stack is elsewhere.
 ```
 
-### 4. Save this setup script locally
+### 3. Note your Stack file paths
 
-Create `C:\VoltStaging\cloud_setup.sh` with the following content.
-This is the single script you will run on the cloud instance.
+You have two curated Stack datasets. Confirm the exact paths before
+renting — you will SCP these directly.
+
+| Dataset | Size | Local Path |
+|---------|------|-----------|
+| Stack Python (curated, 50 GB) | ~50 GB | `D:\VoltData\phase0\the_stack_sample\python\python_sample.jsonl` |
+| Stack Full (curated, 120 GB) | ~120 GB | `D:\VoltData\phase5\the_stack_full\` |
+
+**If the 120 GB dataset is a directory** with multiple files (per-
+language JSONL), you'll SCP the whole directory with `scp -r`. If it's
+a single file, SCP that file. Adjust the commands in Step 2 accordingly.
+
+### 4. Save the setup script locally
+
+Create `C:\VoltStaging\cloud_setup.sh`. This is the single script you
+run on the instance to install Rust, clone the repo, and build.
 
 ```bash
 #!/usr/bin/env bash
@@ -104,48 +110,17 @@ ls -lh target/release/codebook-init target/release/train-vfn
 echo "============================================"
 ```
 
-### 5. Prepare The Stack download script
+### 5. Verify you're ready
 
-Create `C:\VoltStaging\download_stack.sh` — this runs on the cloud
-instance to download 43.8 GB of Python source directly from HuggingFace
-(much faster than uploading from your machine).
+Before renting, you should have:
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
+- [ ] `C:\VoltStaging.tar.gz` — compressed small files (~200–400 MB)
+- [ ] `C:\VoltStaging\cloud_setup.sh` — build script
+- [ ] Stack Python 50 GB — path confirmed and file accessible
+- [ ] Stack Full 120 GB — path confirmed and file(s) accessible
+- [ ] This guide open for reference
 
-echo "=== Downloading The Stack (Python subset) from HuggingFace ==="
-echo "This downloads ~44 GB directly to the instance at cloud speed."
-echo "Expected time: 5-20 minutes on a 1-10 Gbps connection."
-
-pip install -q datasets huggingface_hub 2>/dev/null
-
-python3 -c "
-from datasets import load_dataset
-import json, time
-
-ds = load_dataset('bigcode/the-stack', data_dir='data/python',
-                  split='train', streaming=True, trust_remote_code=True)
-
-start = time.time()
-count = 0
-with open('$HOME/volt-x/data/python_sample.jsonl', 'w') as f:
-    for row in ds:
-        if count >= 6_600_000:
-            break
-        f.write(json.dumps({'content': row['content']}) + '\n')
-        count += 1
-        if count % 500_000 == 0:
-            elapsed = time.time() - start
-            print(f'  {count:,} files written ({elapsed:.0f}s elapsed)')
-
-elapsed = time.time() - start
-print(f'Done: {count:,} files in {elapsed:.0f}s')
-"
-
-echo "=== The Stack download complete ==="
-ls -lh ~/volt-x/data/python_sample.jsonl
-```
+**Now rent the instance.**
 
 ---
 
@@ -160,16 +135,18 @@ On https://vast.ai/search, filter for:
 | GPU | RTX 5090 × 1 |
 | CPU cores | 128+ (EPYC Rome 192 preferred) |
 | RAM | 64 GB+ |
-| Disk | 100 GB+ free (need ~50 GB for The Stack) |
+| Disk | **250+ GB free** (50 GB + 120 GB Stack + build artifacts) |
 | CUDA | 12.8+ (required for Blackwell/RTX 5090) |
 | Image | `nvidia/cuda:12.8.0-devel-ubuntu22.04` or similar with CUDA dev tools |
 | Price | ≤$0.20/hr |
 | Reliability | ≥95% (check host rating) |
 
-**Image choice matters.** Pick a Docker image that already has CUDA
-development tools (nvcc, headers). The `-devel` tag includes them.
-If you pick a `-runtime` image, the Rust build will fail because candle
-needs CUDA headers at compile time.
+**Disk is critical.** You need 250+ GB free for both Stack datasets
+plus build artifacts and checkpoints. A 100 GB disk won't fit.
+
+**Image choice matters.** Pick a Docker image with the `-devel` tag
+(includes nvcc, CUDA headers). If you pick `-runtime`, the Rust build
+will fail because candle needs CUDA headers at compile time.
 
 ### Rent and note your connection details
 
@@ -184,91 +161,117 @@ Save `HOST` and `PORT` — you need them for the next steps.
 
 ## Step 2: Connect and Run Parallel Setup
 
-**CLOCK IS TICKING.** Open **three** local terminals (PowerShell).
-All three run in parallel to minimize wall time.
+**CLOCK IS TICKING.** Open **three** local PowerShell terminals.
+All three run in parallel.
 
-### Terminal 1 — Upload files + setup script
+### Terminal 1 — SSH in, upload setup script, start build
+
+This gets the compilation started immediately. It takes ~10 minutes and
+has no dependency on the data uploads.
 
 ```powershell
-# Upload the compressed staging archive and scripts
-# Replace <PORT> and <HOST> with your Vast.ai instance details
-scp -P <PORT> C:\VoltStaging.tar.gz root@<HOST>:/root/
+# Upload setup script (tiny, instant)
 scp -P <PORT> C:\VoltStaging\cloud_setup.sh root@<HOST>:/root/
-scp -P <PORT> C:\VoltStaging\download_stack.sh root@<HOST>:/root/
-```
 
-Then SSH in and extract:
-
-```powershell
+# SSH in
 ssh -p <PORT> root@<HOST>
 ```
 
 ```bash
-# On the instance — extract uploaded files
-cd /root
-tar -xzf VoltStaging.tar.gz
-# Move to where training expects them (will exist after build)
-# We'll move them after the build creates the directories
-```
-
-### Terminal 2 — SSH in and start build immediately
-
-```powershell
-ssh -p <PORT> root@<HOST>
-```
-
-```bash
-# On the instance — run the setup/build script
+# On the instance — start building immediately
 chmod +x /root/cloud_setup.sh
 /root/cloud_setup.sh
-
-# After build completes (~5-10 min), move uploaded files into place:
-cp /root/VoltStaging/checkpoints/* ~/volt-x/checkpoints/
-cp /root/VoltStaging/data/* ~/volt-x/data/
-
-echo "Uploaded files in place:"
-ls -lh ~/volt-x/checkpoints/
-ls -lh ~/volt-x/data/
+# ^^^ This takes ~5-10 minutes. Leave it running. Go to Terminal 2.
 ```
 
-### Terminal 3 — SSH in and start The Stack download
+### Terminal 2 — Upload small files + both Stack datasets
 
-Don't wait for the build. Start downloading The Stack Python data
-immediately — this is the largest data transfer (~44 GB).
+This runs in parallel with the build. Upload the small archive first
+(instant), then start the Stack uploads.
+
+```powershell
+# 1. Upload compressed checkpoints + Phase 2 data (~200-400 MB, ~3 sec)
+scp -P <PORT> C:\VoltStaging.tar.gz root@<HOST>:/root/
+
+# 2. Upload 50 GB curated Stack Python (~8 min at gigabit)
+scp -P <PORT> "D:\VoltData\phase0\the_stack_sample\python\python_sample.jsonl" root@<HOST>:/root/python_sample.jsonl
+
+# 3. Upload 120 GB curated Stack Full (~18 min at gigabit)
+#    If this is a DIRECTORY with multiple files, use -r:
+scp -r -P <PORT> "D:\VoltData\phase5\the_stack_full" root@<HOST>:/root/the_stack_full
+#    If this is a SINGLE FILE, use:
+#    scp -P <PORT> "D:\VoltData\phase5\the_stack_full.jsonl" root@<HOST>:/root/the_stack_full.jsonl
+```
+
+**Total upload time:** ~25 minutes (50 GB + 120 GB sequential at ~110 MB/s).
+
+### Terminal 3 — SSH in, extract small files, wait for build
+
+Once Terminal 2's first SCP finishes (the .tar.gz), use Terminal 3 to
+extract and place files while the Stack uploads continue.
 
 ```powershell
 ssh -p <PORT> root@<HOST>
 ```
 
 ```bash
-# On the instance — start HuggingFace download immediately
-# Create the data dir manually (don't wait for build script)
-mkdir -p ~/volt-x/data
+# Wait for /root/VoltStaging.tar.gz to appear (should be there in seconds)
+ls -lh /root/VoltStaging.tar.gz
 
-chmod +x /root/download_stack.sh
-/root/download_stack.sh
+# Extract
+cd /root
+tar -xzf VoltStaging.tar.gz
+
+# Create data dir (the build script may not have created it yet)
+mkdir -p ~/volt-x/checkpoints ~/volt-x/data
+
+# Move small files into place
+cp /root/VoltStaging/checkpoints/* ~/volt-x/checkpoints/ 2>/dev/null || echo "Waiting for build to create ~/volt-x..."
+cp /root/VoltStaging/data/*        ~/volt-x/data/        2>/dev/null || echo "Waiting for build to create ~/volt-x..."
+
+# If ~/volt-x doesn't exist yet (build still cloning), wait and retry:
+# while [ ! -d ~/volt-x/data ]; do sleep 5; done
+# cp /root/VoltStaging/checkpoints/* ~/volt-x/checkpoints/
+# cp /root/VoltStaging/data/*        ~/volt-x/data/
 ```
 
 ### What's happening in parallel
 
 ```
-Time    Terminal 1 (upload)       Terminal 2 (build)         Terminal 3 (download)
-─────   ─────────────────────     ──────────────────────     ─────────────────────
-0:00    Uploading .tar.gz         Installing Rust            (waiting for SSH)
-0:01    Upload complete           Cloning repo               Starting HF download
-0:02    Extract archive           apt-get install...         Downloading...
-0:03    (idle)                    cargo build (compiling)    Downloading...
-0:05    (idle)                    cargo build (compiling)    Downloading...
-0:10    (idle)                    BUILD COMPLETE             Downloading...
-0:11    (idle)                    cp files into place        Downloading...
-0:15    (idle)                    (ready for training)       Download complete
+Time    Terminal 1 (build)         Terminal 2 (uploads)          Terminal 3 (extract)
+─────   ──────────────────────     ──────────────────────────    ─────────────────────
+0:00    Upload setup script        Upload VoltStaging.tar.gz     (waiting)
+0:01    Installing Rust            Upload python_sample.jsonl    Extract .tar.gz
+0:02    Cloning repo               Uploading 50 GB Stack...      cp small files
+0:05    cargo build (compiling)    Uploading 50 GB Stack...      (idle)
+0:08    cargo build (compiling)    50 GB done → start 120 GB     (idle)
+0:10    BUILD COMPLETE ✓           Uploading 120 GB Stack...     (idle)
+0:15    (ready)                    Uploading 120 GB Stack...     (idle)
+0:20    (ready)                    Uploading 120 GB Stack...     (idle)
+0:25    (ready)                    120 GB done ✓                 Move Stack files
 ─────
-~15 min total prep time
+Critical path: ~25 min (Stack upload is the bottleneck)
 ```
 
-**Bottleneck:** The longest task is typically either the Rust build
-(~5–10 min) or the HuggingFace download (~5–20 min depending on cloud
-network speed and HF throttling). Everything else finishes faster.
+### After ALL uploads finish — move Stack files into place
+
+Once Terminal 2's SCPs are all done, move the Stack data into the
+project directory:
+
+```bash
+# On the instance (any terminal)
+mv /root/python_sample.jsonl ~/volt-x/data/python_sample.jsonl
+
+# If 120 GB Stack is a directory:
+mv /root/the_stack_full ~/volt-x/data/the_stack_full
+# If it's a single file:
+# mv /root/the_stack_full.jsonl ~/volt-x/data/the_stack_full.jsonl
+
+echo "All files in place:"
+ls -lh ~/volt-x/checkpoints/
+ls -lh ~/volt-x/data/
+du -sh ~/volt-x/data/
+```
 
 ---
 
@@ -289,22 +292,24 @@ nvidia-smi
 # 3. CUDA works?
 nvcc --version
 
-# 4. Checkpoints present? (should be 3 files, ~44 MB total)
+# 4. Checkpoints present? (3 files, ~44 MB total)
 ls -lh checkpoints/
 # Expected:
 #   code_tokenizer.json       (~2.3 MB)
 #   code_encoder.safetensors  (~20.6 MB)
 #   code_decoder.safetensors  (~21.0 MB)
 
-# 5. Phase 2 data present? (should be 6 files)
+# 5. Phase 2 data present? (6 files)
 ls -lh data/code_training_combined.jsonl
 ls -lh data/humaneval.jsonl data/mbpp.jsonl
 ls -lh data/apps_introductory_train.jsonl
 ls -lh data/apps_interview_train.jsonl
 ls -lh data/apps_competition_train.jsonl
 
-# 6. The Stack data present? (should be ~44 GB)
-ls -lh data/python_sample.jsonl
+# 6. Curated Stack data present?
+ls -lh data/python_sample.jsonl           # ~50 GB
+ls -lh data/the_stack_full/               # ~120 GB (or single file)
+du -sh data/                              # Should show ~170+ GB total
 
 echo "All checks passed. Ready to train."
 ```
@@ -444,11 +449,10 @@ cargo run --release -p volt-learn --features vfn-training --bin train-vfn -- \
   2>&1 | tee logs/phase21_stage3.log
 ```
 
-### Automating all 3 stages
+### Automating all 3 stages (fire-and-forget)
 
 If you want all 3 stages to run unattended (so you don't have to SSH
-back in between stages), use this combined script instead of the
-individual commands above:
+back in between stages), create this script and run it instead:
 
 ```bash
 # Create ~/volt-x/run_phase2.sh
@@ -627,16 +631,15 @@ Reduce batch size:
 The model is 51M params — it should fit easily in 32 GB at batch 32.
 OOM likely means something else is consuming VRAM.
 
-### HuggingFace download is slow or fails
+### SCP upload stalls or drops
 
-Some HF datasets require authentication:
-```bash
-pip install huggingface_hub
-huggingface-cli login
-# Enter your HF token
+Vast.ai SSH connections can be flaky. Use `rsync` for resume support:
+```powershell
+# rsync resumes where it left off if interrupted
+rsync -avP --rsh="ssh -p <PORT>" "D:\VoltData\phase0\the_stack_sample\python\python_sample.jsonl" root@<HOST>:/root/
 ```
 
-Or if throttled, retry with smaller chunks.
+If rsync isn't available on Windows, install it via WSL or Git Bash.
 
 ### Instance preempted mid-training
 
@@ -663,7 +666,7 @@ tmux attach -t training
 
 | Item | Duration | Rate | Cost |
 |------|----------|------|------|
-| Prep (setup + build) | ~0.25 hr | $0.20/hr | $0.05 |
+| Prep (build + upload) | ~0.4 hr | $0.20/hr | $0.08 |
 | Phase 0.3 (CPU k-means) | ~1.5 hr | (parallel) | $0.00 |
 | Phase 2.1 Stage 1 | ~50–100 hr | $0.20/hr | $10–20 |
 | Phase 2.1 Stage 2 | ~100–200 hr | $0.20/hr | $20–40 |
@@ -671,13 +674,13 @@ tmux attach -t training
 | **Total** | **~300–500 hr** | | **$60–100** |
 
 Phase 0.3 costs nothing extra — it runs on CPU while the GPU handles
-Phase 2.1. The prep phase costs ~$0.05 (15 min at $0.20/hr).
+Phase 2.1. The prep phase costs ~$0.08 (25 min at $0.20/hr).
 
 ---
 
 ## File Reference
 
-### Files uploaded from local machine → cloud
+### Files uploaded from local → cloud
 
 | File | Size | Local Path | Cloud Path |
 |------|------|-----------|------------|
@@ -690,13 +693,9 @@ Phase 2.1. The prep phase costs ~$0.05 (15 min at $0.20/hr).
 | APPS intro | varies | `D:\VoltData\phase2\apps\data\apps_introductory_train.jsonl` | `~/volt-x/data/` |
 | APPS interview | varies | `D:\VoltData\phase2\apps\data\apps_interview_train.jsonl` | `~/volt-x/data/` |
 | APPS competition | varies | `D:\VoltData\phase2\apps\data\apps_competition_train.jsonl` | `~/volt-x/data/` |
-| **Upload total** | **~1.3 GB** | | |
-
-### Files downloaded from HuggingFace → cloud (not uploaded from local)
-
-| File | Size | Cloud Path |
-|------|------|------------|
-| The Stack Python (6.6M files) | ~43.8 GB | `~/volt-x/data/python_sample.jsonl` |
+| **Stack Python** | **~50 GB** | `D:\VoltData\phase0\the_stack_sample\python\python_sample.jsonl` | `~/volt-x/data/` |
+| **Stack Full** | **~120 GB** | `D:\VoltData\phase5\the_stack_full\` | `~/volt-x/data/the_stack_full/` |
+| **Upload total** | **~171 GB** | | |
 
 ### Files produced by training (download cloud → local when done)
 
