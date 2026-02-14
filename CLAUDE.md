@@ -32,21 +32,21 @@ to load context efficiently. Do NOT read the full master roadmap
 - `SVGs.md` — Visual architecture diagrams (large file, read in 500-line chunks)
 - `VOLT X — Roadmap.md` — Full master roadmap (prefer per-phase files above)
 
-### Training Plans
+### Training
 
-- `TRAINING_PLAN.md` — General training plan (NLP, multi-domain)
-- `CODE_TRAINING_PLAN.md` — Code-specialized training plan (focus before B200)
+- `TRAINING.md` — **Unified training plan** (single source of truth)
+  - Covers: philosophy, curriculum, all phases, datasets, operations
+  - Supersedes all previous training documents (archived in `archive/training/`)
 
 ### Training Data
 
 **IMPORTANT:** All training data is stored on **D: drive** (NOT C: drive):
 - Base location: `D:\VoltData\`
 - Configuration: `c:\Volt_X\training_config.toml`
-- Documentation: `D:\VoltData\DATA.md`
-- Download scripts: `D:\VoltData\scripts\`
 
 When implementing training code, always reference datasets via the paths
-in `training_config.toml`. Never hardcode C: drive paths for data.
+in `training_config.toml`. Prefer HuggingFace streaming over bulk downloads.
+Never hardcode C: drive paths for data.
 
 ## Code Standards
 
