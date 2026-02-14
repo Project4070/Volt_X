@@ -50,6 +50,8 @@ pub mod vfn;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 #[cfg(feature = "gpu")]
+pub mod scaled_vfn;
+#[cfg(feature = "gpu")]
 pub mod training;
 
 use volt_core::{TensorFrame, VoltError, SLOT_DIM};

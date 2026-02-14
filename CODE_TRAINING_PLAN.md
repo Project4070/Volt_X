@@ -35,8 +35,9 @@ DONE ─────────────────────────
   1.3  Role Grounding          (joint with 1.1)
 
 NOW ──────────────────────────────────────────────────────
-  2    VFN Training            (needs 1.1 encoder for frames)
-       ↳ Does NOT need codebook — VFN trains on raw frames
+  2.1  VFN Flow Matching       (infrastructure complete, needs GPU run)
+       ↳ ScaledVfn ~51M params, time-conditioned flow matching
+       ↳ train-vfn binary ready, needs --data + --device cuda
 
 BEFORE PHASE 3 ───────────────────────────────────────────
   0.3  Codebook k-means        (needs current encoder, ~30 min CPU)
@@ -335,7 +336,7 @@ cross-entropy loss weighted at 0.3× contrastive + 0.7× role classification.
 **Hardware:** 2–4× RTX 4090 or 1–2× H100
 **Prerequisites:** Phase 1 encoder (done). Does NOT need codebook.
 
-### 2.1 — VFN Flow Matching on Code Tasks
+### 2.1 — VFN Flow Matching on Code Tasks — INFRASTRUCTURE COMPLETE
 
 **What:** Train VFN to learn velocity field driving query frames
 (problem description) toward solution frames (working code).
@@ -343,14 +344,36 @@ cross-entropy loss weighted at 0.3× contrastive + 0.7× role classification.
 **Why:** VFN defines the energy landscape for RAR. Untrained = random
 drift. Trained = drift toward correct algorithmic solutions.
 
+**Architecture (implemented — ScaledVfn with time conditioning):**
+- Input: BPE tokens → LearnedTranslator → TensorFrame → slot vectors [256-dim]
+- Time: sinusoidal embedding (64 freqs) → Linear(128, 2048) + GELU
+- Entry: Linear(256, 2048) + GELU, then add time embedding
+- 6× ResidualBlock: RMSNorm(2048) → Linear(2048,2048) + GELU → Linear(2048,2048) → residual
+- Exit: RMSNorm(2048) → Linear(2048, 256)
+- Parameters: ~51M
+- Loss: time-conditioned MSE flow matching
+- Optimizer: AdamW (lr=1e-4, warmup 2K steps, cosine decay to 1e-6)
+
+**Training command:**
+```bash
+cargo run --release -p volt-learn --features vfn-training --bin train-vfn -- ^
+  --data "D:\VoltData\phase0\humaneval\data\humaneval_problems.jsonl" ^
+  --data "D:\VoltData\phase0\mbpp\data\mbpp_problems.jsonl" ^
+  --tokenizer "checkpoints\code_tokenizer.json" ^
+  --encoder "checkpoints\code_encoder.safetensors" ^
+  --decoder "checkpoints\code_decoder.safetensors" ^
+  --output "checkpoints\scaled_vfn.safetensors" ^
+  --epochs 10 --batch-size 32 --lr 1e-4 --device cuda
+```
+
 **Scope:**
-- Scale VFN from 3-layer (525K params) to 50M–200M params
-  - Start small (50M) before scaling to 500M+ in Phase 5
-  - Architecture: Deep MLP or small Fourier Neural Operator
-- Training: Flow Matching
+- Scale VFN from 3-layer (525K params) to 51M params ✅
+  - Start small (51M) before scaling to 500M+ in Phase 5
+  - Architecture: Deep residual MLP with sinusoidal time conditioning ✅
+- Training: Time-conditioned Flow Matching ✅
   - Learn v(F_query, t) → F_solution
   - Loss: MSE between predicted drift and target drift
-- Data: (problem_frame, solution_frame) pairs
+- Data: (problem_frame, solution_frame) pairs via LearnedTranslator ✅
 - Curriculum:
   - Stage 1: Simple functions (single operation, no loops)
   - Stage 2: Loops and conditionals

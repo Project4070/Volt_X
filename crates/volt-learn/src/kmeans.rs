@@ -32,6 +32,7 @@
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
 use volt_core::{VoltError, SLOT_DIM};
 
 /// Configuration for mini-batch k-means clustering.
@@ -146,16 +147,20 @@ fn kmeans_plus_plus_init(
     let mut min_dist: Vec<f32> = vec![f32::MAX; n];
 
     for c in 1..k {
-        // Update min_dist with the last-added centroid
+        // Parallel: update min_dist with the last-added centroid
         let last_centroid = &centroids[c - 1];
-        let mut total_weight: f64 = 0.0;
-        for (i, vec) in init_vectors.iter().enumerate() {
-            let d = l2_distance_sq(vec, last_centroid);
-            if d < min_dist[i] {
-                min_dist[i] = d;
-            }
-            total_weight += min_dist[i] as f64;
-        }
+        min_dist
+            .par_iter_mut()
+            .zip(init_vectors.par_iter())
+            .for_each(|(d, vec)| {
+                let dist = l2_distance_sq(vec, last_centroid);
+                if dist < *d {
+                    *d = dist;
+                }
+            });
+
+        // Sequential: compute total weight (preserves deterministic centroid selection)
+        let total_weight: f64 = min_dist.iter().map(|&d| d as f64).sum();
 
         // Weighted random selection
         if total_weight < 1e-30 {
@@ -269,19 +274,22 @@ pub fn mini_batch_kmeans(
         // Process in batches
         for batch_start in (0..n).step_by(config.batch_size) {
             let batch_end = (batch_start + config.batch_size).min(n);
+            let batch_indices = &indices[batch_start..batch_end];
 
-            for &idx in &indices[batch_start..batch_end] {
-                let vector = &vectors[idx];
+            // Parallel: assign each vector to its nearest centroid
+            let assignments: Vec<usize> = batch_indices
+                .par_iter()
+                .map(|&idx| assign_nearest(&vectors[idx], &centroids))
+                .collect();
 
-                // Assign to nearest centroid
-                let nearest = assign_nearest(vector, &centroids);
-
-                // Update centroid with learning rate eta = 1/count
+            // Sequential: update centroids (order-dependent due to learning rate)
+            for (batch_pos, &nearest) in assignments.iter().enumerate() {
+                let idx = batch_indices[batch_pos];
                 counts[nearest] += 1;
                 let eta = 1.0 / counts[nearest] as f32;
                 let centroid = &mut centroids[nearest];
-                for d in 0..SLOT_DIM {
-                    centroid[d] = (1.0 - eta) * centroid[d] + eta * vector[d];
+                for (d, c) in centroid.iter_mut().enumerate() {
+                    *c = (1.0 - eta) * *c + eta * vectors[idx][d];
                 }
             }
         }
@@ -291,21 +299,23 @@ pub fn mini_batch_kmeans(
             normalize_in_place(c);
         }
 
-        // Check for NaN/Inf
-        for (i, c) in centroids.iter().enumerate() {
-            if c.iter().any(|x| !x.is_finite()) {
-                return Err(VoltError::LearnError {
-                    message: format!(
-                        "k-means diverged at iteration {iteration}: centroid {i} contains NaN/Inf"
-                    ),
-                });
-            }
+        // Parallel: check for NaN/Inf
+        let bad_centroid = centroids
+            .par_iter()
+            .enumerate()
+            .find_any(|(_, c)| c.iter().any(|x| !x.is_finite()));
+        if let Some((i, _)) = bad_centroid {
+            return Err(VoltError::LearnError {
+                message: format!(
+                    "k-means diverged at iteration {iteration}: centroid {i} contains NaN/Inf"
+                ),
+            });
         }
 
-        // Convergence check: mean centroid movement
+        // Parallel: convergence check — mean centroid movement
         let total_movement: f64 = centroids
-            .iter()
-            .zip(old_centroids.iter())
+            .par_iter()
+            .zip(old_centroids.par_iter())
             .map(|(new, old)| l2_distance_sq(new, old) as f64)
             .sum();
         final_movement = (total_movement / config.k as f64).sqrt() as f32;
@@ -340,7 +350,7 @@ pub fn mean_quantization_error(
         return 0.0;
     }
     let total: f64 = vectors
-        .iter()
+        .par_iter()
         .map(|v| {
             let nearest = assign_nearest(v, centroids);
             l2_distance_sq(v, &centroids[nearest]).sqrt() as f64

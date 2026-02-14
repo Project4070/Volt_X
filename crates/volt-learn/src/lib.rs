@@ -56,6 +56,10 @@ pub mod role_labels;
 #[cfg(feature = "code-training")]
 pub mod contrastive;
 
+// Phase 2: VFN Training
+#[cfg(feature = "vfn-training")]
+pub mod code_pairs;
+
 // Milestone 5.1: Learning Event Logging
 pub mod event;
 pub mod buffer;

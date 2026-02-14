@@ -13,6 +13,7 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rand.workspace = true
+rayon.workspace = true
 
 # Code-training-only dependencies (compiled only with `code-training` feature)
 candle-core = { workspace = true, optional = true }
@@ -22,6 +23,7 @@ tokenizers = { workspace = true, optional = true }
 [features]
 default = []
 code-training = ["volt-translate/code-training", "dep:candle-core", "dep:candle-nn", "dep:tokenizers"]
+vfn-training = ["code-training", "volt-soft/gpu"]
 
 [dev-dependencies]
 proptest.workspace = true
@@ -45,3 +47,8 @@ required-features = ["code-training"]
 name = "train-decoder"
 path = "src/bin/train_decoder.rs"
 required-features = ["code-training"]
+
+[[bin]]
+name = "train-vfn"
+path = "src/bin/train_vfn.rs"
+required-features = ["vfn-training"]

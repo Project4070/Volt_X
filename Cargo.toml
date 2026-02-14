@@ -38,6 +38,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
 hnsw_rs = "0.3"
 rand = "0.9"
+rayon = "1.10"
 rand_distr = "0.5"
 candle-core = { version = "0.9", features = ["cuda"] }
 candle-nn = "0.9"

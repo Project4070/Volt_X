@@ -15,7 +15,11 @@
 //! 7. Backprop + AdamW step
 
 pub mod flow_matching;
+pub mod scaled_flow_matching;
 
 pub use flow_matching::{
     generate_synthetic_pairs, train_vfn_flow_matching, FlowMatchConfig, FramePair, TrainResult,
+};
+pub use scaled_flow_matching::{
+    train_scaled_vfn, EpochResult, ScaledFlowConfig, ScaledTrainResult,
 };

@@ -46,11 +46,18 @@ max_steps = 100_000
 warmup_steps = 5_000
 
 [phase2]
-# VFN training
-vfn_params = 50_000_000
+# VFN training (ScaledVfn — deep residual MLP with time conditioning)
+vfn_params = 51_000_000
+hidden_dim = 2048
+num_blocks = 6
+time_embed_freqs = 64
 learning_rate = 1e-4
+min_learning_rate = 1e-6
+weight_decay = 0.01
+warmup_steps = 2000
 batch_size = 32
-max_steps = 500_000
+epochs = 10
+validation_frac = 0.1
 curriculum_stages = 4
 
 [phase3]

@@ -254,6 +254,37 @@ impl CodeDataset {
         Ok(Self { problems })
     }
 
+    /// Creates a dataset from an existing vector of problems.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VoltError::LearnError`] if the vector is empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use volt_learn::code_dataset::{CodeDataset, CodeProblem};
+    ///
+    /// let problems = vec![CodeProblem {
+    ///     id: "test/1".to_string(),
+    ///     query: "Add two numbers".to_string(),
+    ///     solution: "def add(a, b): return a + b".to_string(),
+    ///     tests: vec![],
+    ///     language: Some("python".to_string()),
+    ///     difficulty: None,
+    /// }];
+    /// let dataset = CodeDataset::from_problems(problems).unwrap();
+    /// assert_eq!(dataset.len(), 1);
+    /// ```
+    pub fn from_problems(problems: Vec<CodeProblem>) -> Result<Self, VoltError> {
+        if problems.is_empty() {
+            return Err(VoltError::LearnError {
+                message: "Cannot create dataset from empty problem list".to_string(),
+            });
+        }
+        Ok(Self { problems })
+    }
+
     /// Returns the number of problems in the dataset.
     ///
     /// # Example
