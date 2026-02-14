@@ -52,8 +52,8 @@ Three archives, uploaded in parallel:
 
 ```powershell
 # ── Archive 1: Small files (fast, <1 min) ──
-tar -czf C:\VoltStaging.tar.gz -C C:\ VoltStaging
-# Result: C:\VoltStaging.tar.gz (~200-400 MB)
+tar -czf C:\Users\where\VoltStaging.tar.gz -C C:\ VoltStaging
+# Result: C:\Users\where\VoltStaging.tar.gz (~200-400 MB)
 ```
 
 Archives 2 and 3 use `tar` for correct relative paths, then 7-Zip for
@@ -63,19 +63,19 @@ window to parallelize.
 ```powershell
 # ── Archive 2: Phase 0 Python Stack (~44 GB → ~9-11 GB) ──
 # Step 1: tar with -C to store just "python_sample.jsonl" (no full path)
-tar -cf C:\stack_python.tar -C "D:\VoltData\phase0\the_stack_sample\python" python_sample.jsonl
+tar -cf C:\Users\where\stack_python.tar -C "D:\VoltData\phase0\the_stack_sample\python" python_sample.jsonl
 # Step 2: compress with 7-Zip multi-threaded (~5-15 min)
-& "C:\Program Files\7-Zip\7z.exe" a -tgzip -mx3 -mmt=on C:\stack_python.tar.gz C:\stack_python.tar
-del C:\stack_python.tar
+& "C:\Program Files\7-Zip\7z.exe" a -tgzip -mx3 -mmt=on C:\Users\where\stack_python.tar.gz C:\Users\where\stack_python.tar
+del C:\Users\where\stack_python.tar
 ```
 
 ```powershell
 # ── Archive 3: Phase 5 Multilang Stack (~98 GB → ~20-25 GB) ──
 # Step 1: tar with -C to store "go/go_sample.jsonl", "java/java_sample.jsonl", etc.
-tar -cf C:\stack_multilang.tar -C "D:\VoltData\phase5\the_stack_multilang" go/go_sample.jsonl java/java_sample.jsonl javascript/javascript_sample.jsonl python/python_sample.jsonl rust/rust_sample.jsonl
+tar -cf C:\Users\where\stack_multilang.tar -C "D:\VoltData\phase5\the_stack_multilang" go/go_sample.jsonl java/java_sample.jsonl javascript/javascript_sample.jsonl python/python_sample.jsonl rust/rust_sample.jsonl
 # Step 2: compress with 7-Zip multi-threaded (~10-30 min)
-& "C:\Program Files\7-Zip\7z.exe" a -tgzip -mx3 -mmt=on C:\stack_multilang.tar.gz C:\stack_multilang.tar
-del C:\stack_multilang.tar
+& "C:\Program Files\7-Zip\7z.exe" a -tgzip -mx3 -mmt=on C:\Users\where\stack_multilang.tar.gz C:\Users\where\stack_multilang.tar
+del C:\Users\where\stack_multilang.tar
 ```
 
 > **Tip:** `-mx3` is "fast" compression — good ratio vs speed for JSONL
@@ -95,8 +95,8 @@ dir C:\VoltStaging\checkpoints\   # 3 files: tokenizer, encoder, decoder
 dir C:\VoltStaging\data\          # 6 files: combined, humaneval, mbpp, 3x apps
 
 # Stack archives
-dir C:\stack_python.tar.gz        # ~9-11 GB
-dir C:\stack_multilang.tar.gz     # ~20-25 GB
+dir C:\Users\where\stack_python.tar.gz        # ~9-11 GB
+dir C:\Users\where\stack_multilang.tar.gz     # ~20-25 GB
 ```
 
 ### 4. Save this setup script locally
@@ -184,7 +184,7 @@ All four run in parallel to minimize wall time.
 ```powershell
 # Upload the compressed staging archive and setup script (~200-400 MB, fast)
 # Replace <PORT> and <HOST> with your Vast.ai instance details
-scp -P <PORT> C:\VoltStaging.tar.gz root@<HOST>:/root/
+scp -P <PORT> C:\Users\where\VoltStaging.tar.gz root@<HOST>:/root/
 scp -P <PORT> C:\VoltStaging\cloud_setup.sh root@<HOST>:/root/
 ```
 
@@ -218,7 +218,7 @@ Start this immediately — don't wait for the build.
 
 ```powershell
 # Uploads the Phase 0 Python-only Stack (~9-11 GB compressed → 44 GB)
-scp -P <PORT> C:\stack_python.tar.gz root@<HOST>:/root/
+scp -P <PORT> C:\Users\where\stack_python.tar.gz root@<HOST>:/root/
 ```
 
 Once the upload finishes, SSH in and extract:
@@ -245,7 +245,7 @@ Start this immediately — don't wait for the build.
 
 ```powershell
 # Uploads the Phase 5 multilang Stack (~20-25 GB compressed → 98 GB)
-scp -P <PORT> C:\stack_multilang.tar.gz root@<HOST>:/root/
+scp -P <PORT> C:\Users\where\stack_multilang.tar.gz root@<HOST>:/root/
 ```
 
 Once the upload finishes, SSH in and extract:
