@@ -1,13 +1,13 @@
 # Volt X — Unified Training Plan
 
-**Version:** 2.0 (replaces TRAINING_PLAN.md, CODE_TRAINING_PLAN.md, and 5 other
-fragmented documents — all archived in `archive/training/`)
+**Version:** 3.0 (spiral curriculum revision — replaces sequential F1/F2/F3
+approach from v2.0)
 
-**Date:** 2026-02-14
+**Date:** 2026-02-15
 
-**Status:** Phase 0 infrastructure complete. Phase 1 code translator trained
-(reusable artifacts). Training paradigm and curriculum revised — this document
-is the single source of truth.
+**Status:** Phase 0 infrastructure complete. Training paradigm revised to
+spiral curriculum — all four training signals from day one, applied to
+progressively more complex content across six developmental stages.
 
 ---
 
@@ -41,13 +41,17 @@ through incremental improvisation:
    on top of it.
 
 5. **Plans were fragmented and contradictory.** Seven separate documents
-   (TRAINING_PLAN, CODE_TRAINING_PLAN, CLOUD_TRAINING_PLAN, TRAINING_COMMANDS,
-   DATA_SETUP_SUMMARY, VASTAI_SETUP_GUIDE, PATH_TO_AGI) each told a different
-   story. PATH_TO_AGI suggested "train RAR on next-word prediction" in
-   Milestone 5 — directly contradicting Volt's design.
+   each told a different story. PATH_TO_AGI suggested "train RAR on
+   next-word prediction" — directly contradicting Volt's design.
+
+6. **Sequential phases starved the VFN.** In the v2.0 plan, VFN training
+   didn't begin until Phase F3 (week 6+). The encoder trained alone in
+   F1 and F2, then the VFN had to learn everything from scratch. A spiral
+   approach where the VFN trains from day one gives it 5x more practice
+   by the time it reaches complex reasoning tasks.
 
 This document unifies everything into one plan that stays true to Volt's
-architectural principles.
+architectural principles and follows a developmental learning trajectory.
 
 ---
 
@@ -120,122 +124,261 @@ to a GPU rasterizer: the 3D scene (frame) is computed via non-sequential
 methods, but the final pixel output is sequential. The decoder's NTP is
 contained and doesn't infect the upstream pipeline.
 
+### The Spiral Principle
+
+**All four signals are present at every developmental stage.** What changes
+is the complexity:
+
+| Signal | Stage 1 (Naming) | Stage 5 (Hypotheticals) |
+|---|---|---|
+| Slot Filling | Mask 1 of 2 slots | Mask 8 of 16 slots |
+| Binding | `dog IsA animal` | `unbind(bind(cause, entails), entails) ≈ cause` |
+| Discrimination | 2-slot coherence check | 16-slot narrative coherence |
+| Multi-Resolution | R0 gist vs R1 (2 slots) | All 4 resolutions, 16 slots |
+
+This is a Montessori/Piaget-style curriculum — interleaved and developmental —
+not isolated semester courses where skills atrophy between phases.
+
 ---
 
-## Part II: Curriculum — Language First, Domain Second
+## Part II: The Spiral Curriculum
 
-### Why This Order Matters
+### Why Developmental, Not Sequential
+
+The v2.0 plan treated training as a sequence of isolated phases: first train
+lexical grounding (F1), then world knowledge (F2), then reasoning (F3), then
+code (D1). Each phase trained different components with different objectives.
+
+This has three problems:
+
+1. **The VFN starves.** VFN training doesn't start until Phase F3 (week 6+).
+   By then the encoder has learned embeddings that the VFN has never seen.
+   The VFN must learn slot filling, denoising, and reasoning all at once on
+   unfamiliar representations.
+
+2. **Catastrophic forgetting at phase boundaries.** When F2 starts, F1's
+   lexical grounding can degrade. When F3 starts, F2's relational bindings
+   can drift. Phase boundaries create discontinuities.
+
+3. **Wasted compute.** In F1, the encoder trains on slot assignment while the
+   VFN sits idle. In F2, HDC trains on relations while the encoder drifts.
+   Every component should train on every batch.
+
+### The Spiral Alternative
+
+A spiral curriculum applies all four training signals from day one, but
+controls complexity via three levers:
+
+| Lever | Range | What It Controls |
+|---|---|---|
+| **Active slots** | 2 → 16 | How many slots the system uses |
+| **VFN iterations** | 1 → 30 | How many refinement steps the VFN takes |
+| **HDC operations** | superpose only → full algebra | Which binding operations are available |
+
+The system starts as an "infant" — naming things with 2 slots and 1
+refinement step — and gradually matures to a "teenager" solving multi-hop
+reasoning with 16 slots and 30 iterations. Code is the final specialization,
+learned by a system that already understands the world.
+
+### Metric-Gated Advancement
+
+The curriculum scheduler advances to the next stage only when specific
+accuracy targets are met. This prevents the "trained but didn't learn"
+failure mode:
 
 ```
-Foundation A:  Lexical Grounding       (what do words mean?)
-               FrameNet, PropBank, AMR
-                      ↓
-Foundation B:  World Knowledge         (how do concepts relate?)
-               ConceptNet, ATOMIC, WordNet
-                      ↓
-Foundation C:  Compositional Reasoning (multi-step frame transformations)
-               SCAN, COGS, CLUTRR, bAbI
-                      ↓
-Domain:        Code (or any specialization)
-               CodeSearchNet, HumanEval, MBPP, tiny-codes
+if stage.slot_filling_accuracy >= gate_threshold
+   && stage.binding_retrieval_accuracy >= gate_threshold
+   && stage.discrimination_auc >= gate_threshold:
+       advance_to_next_stage()
+else:
+       continue_training_current_stage()
 ```
 
-Each layer builds on the previous. By the time the system reaches code
-training, it already knows:
-- "weather" is a natural phenomenon (lexical grounding)
-- "forecast" is a prediction about future states (world knowledge)
-- "app" is a software instrument used by agents (world knowledge)
-- Given premises, derive conclusions via frame refinement (reasoning)
+### Continuous Rehearsal
 
-Writing a weather app then becomes composing known concepts — not memorizing
-code patterns from (problem, solution) text pairs.
+To prevent catastrophic forgetting, **20% of every training batch** consists
+of material from earlier stages. A Stage 4 batch contains:
 
-### What This Means for Existing Work
+- 80% Stage 4 material (narrative, multi-hop, 12 active slots)
+- 10% Stage 2-3 material (SVO sentences, contextual frames)
+- 10% Stage 1 material (concrete nouns, 2-slot frames)
 
-| Existing Artifact | Status | Role in New Plan |
+This is cheaper than it sounds — earlier stages use fewer active slots, so
+forward/backward passes on rehearsal examples are faster.
+
+### How This Maps to Existing Code
+
+| Existing Component | Role in Spiral Approach |
+|---|---|
+| CNN Encoder (5.1M params) | Same architecture. Role Head starts predicting 2 slots, gradually expands to 16 |
+| ScaledVfn (51M params) | Same architecture. `max_iterations` starts at 1, grows to 30 |
+| SlotAttention | Same, but only attends over active slots (inactive slots masked) |
+| HDC bind/unbind/superpose | Same ops, introduced progressively: superpose → bind → unbind → permute |
+| Codebook | Initialized after Stage 4 when embeddings are meaningful |
+| Decoder | Trained alongside encoder from Stage 1, but only decodes active slots |
+
+### What This Means for Existing Artifacts
+
+| Existing Artifact | Status | Role in Spiral Plan |
 |---|---|---|
 | VFN Checkpoint System (Phase 0.1) | Reusable as-is | Infrastructure |
 | Code Dataset Pipeline (Phase 0.2) | Reusable, extend for new formats | Infrastructure |
-| Code Attention Bias (Phase 0.4) | Reusable for code phase | Used in Domain phase |
-| BPE Tokenizer (32K vocab) | Reusable as-is | Shared across all phases |
-| CNN Encoder (5.1M params) | Architecture reusable | Retrain on language data, then fine-tune on code |
-| Autoregressive Decoder (6.7M) | Architecture reusable | Retrain after encoder; role unchanged (rendering) |
-| Codebook Init Pipeline | Reusable | Run after Foundation phases, not before |
-| ScaledVfn (51M params) | Architecture reusable | New training objectives (not flat flow matching) |
-| training_config.toml | Needs update | Add language dataset paths |
-| Vast.ai / cloud setup | Outdated | Rewrite when training approach is implemented |
+| Code Attention Bias (Phase 0.4) | Reusable for Stage 6 | Applied during code specialization |
+| BPE Tokenizer (32K vocab) | Reusable as-is | Shared across all stages |
+| CNN Encoder (5.1M params) | Architecture reusable | Retrain from scratch with progressive slot expansion |
+| Autoregressive Decoder (6.7M) | Architecture reusable | Trained alongside encoder, decodes active slots only |
+| Codebook Init Pipeline | Reusable | Run after Stage 4 when embeddings are meaningful |
+| ScaledVfn (51M params) | Architecture reusable | Trains from Stage 1 (1 iteration) to Stage 5 (30 iterations) |
+| training_config.toml | Needs update | Add language dataset paths, stage configs |
 
 ---
 
-## Part III: Training Phases
+## Part III: The Six Developmental Stages
 
-### Phase 0: Infrastructure (DONE, except updates)
+### Stage 1: Naming (The Infant)
 
-All infrastructure from the original Phase 0 is reusable:
+**What Volt learns:** Concrete nouns exist and belong in semantic slots.
+Basic category membership. "Dog" and "canine" mean the same thing.
 
-- **0.1 VFN Checkpoint System** — DONE. Save/load works.
-- **0.2 Dataset Pipeline** — DONE for JSONL. Needs extension:
-  - Add HuggingFace streaming adapter (Python preprocessing script that
-    streams from HF Hub → writes local JSONL in Volt's format)
-  - Add FrameNet/PropBank/ConceptNet format converters
-  - Add slot-annotated data format: JSONL with `{"text": "...", "slots": {"S0": "agent_word", "S1": "predicate_word", ...}}`
-- **0.3 Codebook Init** — Code DONE, k-means deferred. Still valid approach,
-  run after Foundation B when the encoder produces meaningful embeddings.
-- **0.4 Attention Bias** — DONE for code-specific patterns. Add a general
-  language bias matrix (Agent↔Predicate strong, Agent↔Patient medium) as the
-  default, with code bias applied on top during code fine-tuning.
+**Active slots:** 2 (S0: Agent, S2: Patient)
+**VFN iterations:** 1
+**HDC operations:** superpose only (category formation)
+**Duration:** 1-2 weeks
+**Hardware:** 1x RTX 4090, ~5 GPU-hours
 
-**New infrastructure needed:**
+#### Training Signals at This Stage
 
-- **0.5 HuggingFace Streaming Script** — Python script in `tools/` that:
-  - Accepts a HuggingFace dataset name and split
-  - Streams rows via `datasets.load_dataset(..., streaming=True)`
-  - Converts to Volt's JSONL format
-  - Writes to stdout or a file
-  - Handles FrameNet, PropBank, ConceptNet, SCAN, COGS, CodeSearchNet,
-    tiny-codes, etc. via format-specific converters
-  - No full dataset download required
+**Slot Filling:** Mask 1 of 2 slots, predict it. Given `Agent=dog, Patient=???`
+with context "the dog chased the cat," predict `Patient=cat`. This is trivial —
+and that's the point. The VFN starts with guaranteed success.
+
+**Binding:** Simple IsA relations via superposition.
+`superpose(dog, cat, fish) ≈ animal`. No bind/unbind yet — just category
+formation from exemplars.
+
+**Discrimination:** 2-slot coherence. "Dog chases cat" (low energy) vs
+"dog chases algebra" (high energy). The VFN learns that Agent and Patient
+should be semantically compatible.
+
+**Multi-Resolution:** R0 gist should indicate "animal interaction" when
+R1 contains dog and cat. Only 2-slot consistency required.
+
+#### Datasets
+
+| Dataset | What It Provides | Subset Used |
+|---|---|---|
+| FrameNet 1.7 | Concrete frames with Agent/Patient annotations | Simple transitive frames only |
+| WordNet (via NLTK) | Hypernym chains (dog → canine → animal) | Noun synsets, depth ≤ 3 |
+| STS Benchmark | Semantic similarity pairs | Concrete noun pairs only |
+
+#### Slot Mapping
+
+| FrameNet Element | TensorFrame Slot |
+|---|---|
+| Agent / Arg0 | S0 (Agent) |
+| Patient / Arg1 | S2 (Patient) |
+| All others | Masked / inactive |
+
+#### Gate Criteria (advance to Stage 2 when met)
+
+- Slot filling accuracy ≥ 70% (mask 1 of 2 slots)
+- Superposition category retrieval ≥ 60% (nearest neighbor of `superpose(dog, cat)` = animal)
+- Discrimination AUC ≥ 0.65
 
 ---
 
-### Phase F1: Lexical Grounding
+### Stage 2: Sentences (The Toddler)
 
-**Goal:** Teach the system what words mean in slot-structured space.
+**What Volt learns:** Actions exist. Subject-Verb-Object structure. Role
+violations are detectable — "chef cooks pasta" is valid, "pasta cooks chef"
+is wrong.
 
+**Active slots:** 3-4 (S0: Agent, S1: Predicate, S2: Patient, optionally S3: Location)
+**VFN iterations:** 1-3
+**HDC operations:** superpose + bind
 **Duration:** 2-3 weeks
-**Hardware:** 1x RTX 4090/5090, ~10-20 GPU-hours
+**Hardware:** 1x RTX 4090, ~10 GPU-hours
 
-#### What This Phase Teaches
+#### Training Signals at This Stage
 
-The stub translator maps words to vectors via hash — "dog" and "canine" are
-completely unrelated. After this phase:
-- Semantically similar words produce similar embeddings
-- Words are assigned to correct semantic slots (Agent in S0, Predicate in S1)
-- The system understands thematic roles, not just token identity
+**Slot Filling:** Mask 1-2 of 3-4 slots. Given `Agent=chef, Predicate=???,
+Patient=pasta`, predict `Predicate=cook`. The VFN now takes 1-3 iterations
+and must learn when to stop refining.
 
-#### Training Objective
+**Binding:** Agent-Predicate and Predicate-Patient relations.
+`bind(chef, performs) ≈ cooking`. This introduces the bind operation for
+the first time — the system learns that relationships between concepts can
+be computed algebraically.
 
-**Slot Assignment** (supervised): Given a sentence with known SRL annotations,
-train the encoder's Role Head to classify each token into the correct slot.
-Loss: cross-entropy on slot labels from FrameNet frame elements.
+**Discrimination:** Role violation detection. "Chef cooks pasta" has low
+energy; "pasta cooks chef" has high energy. Same words, wrong roles — the
+energy function must use slot identity, not just slot content.
 
-**Semantic Embedding** (contrastive): Paraphrase pairs should produce similar
-frame embeddings, unrelated pairs should produce dissimilar ones. Loss: InfoNCE
-with temperature τ=0.07 (same as existing encoder).
+**Multi-Resolution:** R0 gist should indicate "cooking event" when R1
+contains chef/cook/pasta. R1 proposition structure (SVO) must be consistent
+with R2 phrase-level embeddings.
 
-**Slot Filling** (self-supervised): Mask random slots in encoded frames, train
-VFN to reconstruct them. This begins VFN training from the very first phase.
+#### Datasets
 
-#### Datasets (all streamable from HuggingFace)
+| Dataset | What It Provides | Subset Used |
+|---|---|---|
+| PropBank / CoNLL-2012 | Arg0/Arg1/V annotations | Simple SVO sentences (3-4 args max) |
+| FrameNet 1.7 | Semantic frames with roles | Frames with ≤ 4 frame elements |
+| PAWS | Paraphrase pairs (same words, different structure) | Subset with clear SVO structure |
 
-| Dataset | Size | What It Provides | HF Name |
-|---|---|---|---|
-| FrameNet 1.7 | ~200K annotated sentences | Semantic frames with named slots (frame elements) | `framenet_v17` or via NLTK |
-| PropBank / CoNLL-2012 | ~1M predicate-argument annotations | Arg0 (agent), Arg1 (patient), ArgM-LOC, ArgM-TMP, ArgM-MNR, ArgM-CAU | `conll2012_ontonotesv5` |
-| STS Benchmark | 8.6K sentence pairs with similarity scores | Paraphrase / semantic similarity supervision | `sentence-transformers/stsb` |
-| PAWS | 108K paraphrase pairs | Hard paraphrase detection (same words, different meaning) | `google-research-datasets/paws` |
+#### Gate Criteria (advance to Stage 3 when met)
 
-**Slot mapping from FrameNet/PropBank to TensorFrame:**
+- Slot filling accuracy ≥ 75% (mask 1-2 of 3-4 slots)
+- Bind retrieval accuracy ≥ 40% (`bind(A, rel)` nearest neighbor = B)
+- Role violation discrimination AUC ≥ 0.70
+- VFN converges within 3 iterations on >80% of examples
+
+---
+
+### Stage 3: Context (The Preschooler)
+
+**What Volt learns:** Events have context — where, when, how, and why things
+happen. 2-hop reasoning chains: "rain causes floods, floods cause damage"
+→ "rain causes damage."
+
+**Active slots:** 8 (S0-S7: Agent, Predicate, Patient, Location, Time, Manner, Instrument, Cause)
+**VFN iterations:** 3-10
+**HDC operations:** superpose + bind + unbind
+**Duration:** 3-4 weeks
+**Hardware:** 1x RTX 4090, ~20-30 GPU-hours
+
+#### Training Signals at This Stage
+
+**Slot Filling:** Mask 2-4 of 8 slots. Given a full event frame with Location
+and Time removed, predict where and when. The VFN must now coordinate multiple
+missing slots — if it knows "swimming" it can infer "pool" (Location) and
+"summer" (Time).
+
+**Binding:** Contextual relations via ConceptNet and ATOMIC triples.
+`bind(rain, causes) ≈ flood`. Unbind is introduced: given `bind(rain, causes)`
+and `causes`, retrieve `rain`. This teaches reversible algebraic reasoning.
+
+**Discrimination:** 8-slot coherence. "Chef cooks pasta in kitchen at noon"
+(low energy) vs "chef cooks pasta in algebra at theorem" (high energy). The
+energy landscape becomes richer — more slots means more ways to be incoherent.
+
+**Multi-Resolution:** All 4 resolutions active. R0 (discourse gist) must
+be consistent with R1 (proposition), R2 (phrase), R3 (token) across 8
+slots. Cross-resolution inference: R0 says "cooking" and R3 has token
+"spatula" → R1 should include an Instrument slot.
+
+#### Datasets
+
+| Dataset | What It Provides | Subset Used |
+|---|---|---|
+| PropBank / CoNLL-2012 (full) | All argument types including ArgM-LOC, TMP, MNR, CAU | Full training set |
+| ConceptNet 5 (EN) | Commonsense relations (UsedFor, IsA, HasProperty, CapableOf) | ~1.5M English triples |
+| ATOMIC 2020 | Social/physical commonsense (xNeed, xEffect, oReact) | If-then tuples |
+| STS Benchmark (full) | Semantic similarity across sentence types | Full dataset |
+| bAbI QA (tasks 1) | Single-hop factual QA with supporting facts | Task 1 only as 2-hop warmup |
+
+#### Slot Mapping (Full Linguistic)
 
 | FrameNet Element / PropBank Arg | TensorFrame Slot |
 |---|---|
@@ -247,179 +390,152 @@ VFN to reconstruct them. This begins VFN training from the very first phase.
 | Manner / ArgM-MNR | S5 (Manner) |
 | Instrument / Arg2 | S6 (Instrument) |
 | Cause / ArgM-CAU | S7 (Cause) |
-| Result / Arg3-4 | S8 (Result) |
-| Other / ArgM-* | S9-S15 (Free) |
 
-This is not a coincidence — TensorFrame's slot design was inspired by thematic
-role theory. FrameNet and PropBank are the ground truth for it.
+#### Gate Criteria (advance to Stage 4 when met)
 
-#### Architecture
-
-Reuse the existing CNN encoder architecture (5.1M params):
-- Input: BPE tokens (32K vocab, existing tokenizer)
-- 3x Conv1D (128→256) with increasing kernel sizes
-- Role Head: Linear(256, 16) → softmax (slot assignment)
-- Embed Head: Linear(256, 256) (per-token embedding)
-- Slot aggregation → L2-norm → 16x256 TensorFrame
-
-Retrain from scratch on language data (not fine-tune from code weights —
-language is the foundation, code comes later).
-
-#### Deliverables
-
-- Slot assignment accuracy >80% on FrameNet/PropBank test set
-- Paraphrase cosine similarity >0.75 (STS-B correlation >0.70)
-- VFN slot-filling reconstruction >60% on masked slots
+- Slot filling accuracy ≥ 75% (mask 2-4 of 8 slots)
+- Bind/unbind retrieval accuracy ≥ 50% on ConceptNet test split
+- Discrimination AUC ≥ 0.75
+- 2-hop reasoning accuracy ≥ 50% (A→B→C chains)
+- VFN converges within 10 iterations on >80% of examples
 
 ---
 
-### Phase F2: World Knowledge
+### Stage 4: Narrative (The School-Age Child)
 
-**Goal:** Teach the system how concepts relate using HDC algebra.
+**What Volt learns:** Sequences of events form stories. Easy slots converge
+first; dependent slots are derived. The VFN learns an "easy-first" strategy —
+fill Agent and Predicate, then derive Result from them.
 
-**Duration:** 2-3 weeks
-**Hardware:** CPU-heavy + light GPU, ~20-30 GPU-hours
+**Active slots:** 12 (S0-S11)
+**VFN iterations:** 10-20
+**HDC operations:** superpose + bind + unbind + permute
+**Duration:** 4-5 weeks
+**Hardware:** 1x H100 or 2x RTX 4090, ~60-100 GPU-hours
 
-#### What This Phase Teaches
+#### Training Signals at This Stage
 
-After lexical grounding, the system knows what individual words mean. Now it
-learns relationships between concepts:
-- "weather" UsedFor "planning activities"
-- "umbrella" UsedFor "protection from rain"
-- "rain" IsA "precipitation"
-- "chef" CapableOf "cooking"
+**Slot Filling (Denoising):** Mask 4-6 of 12 slots including dependent ones.
+The VFN must learn ordering — fill Cause before Result, fill Agent before
+deriving what the agent is capable of. Per-slot convergence: frozen slots
+stop consuming compute while uncertain slots continue iterating.
 
-These relationships are encoded as HDC operations:
-```
-bind(weather, UsedFor) ≈ planning_activities   (in the same 256-dim space)
-```
+**Binding:** Complex multi-hop chains. `bind(bind(rain, causes), entails)`
+composes two relations. Permute is introduced: reorder slot assignments to
+test structural invariance (the meaning shouldn't change if you swap the
+physical position of equivalent slots).
 
-#### Training Objective
+**Discrimination:** Narrative coherence across 12 slots. A story where the
+Agent, Predicate, Result, and Cause are all mutually consistent has low
+energy. Shuffle one slot's content to a different role → high energy.
 
-**Relational Binding** (supervised): Given (concept_A, relation, concept_B)
-triples, minimize: `‖bind(embed(A), embed(relation)) - embed(B)‖²`
+**Multi-Resolution:** Cross-resolution inference becomes primary. R0 discourse
+gist ("a cooking disaster") should be derivable from R1 propositions ("chef
+burned the pasta, smoke filled the kitchen, fire alarm rang").
 
-**Retrieval via Unbind** (supervised): Given bind result and relation, retrieve
-the original concept: `unbind(bind(A, rel), rel) ≈ A`
+**Codebook initialization happens here.** After Stage 4, the encoder produces
+meaningful embeddings for the first time across 12 diverse slots. Run k-means
+to produce the initial codebook (65,536 entries).
 
-**Category Superposition** (supervised): Given category members, their
-superposition should represent the category:
-`superpose(dog, cat, fish) ≈ animal`
+#### Datasets
 
-**Negative Sampling** (contrastive): Random (A, relation, B') triples where
-B' is wrong should produce high distance after binding.
+| Dataset | What It Provides | Subset Used |
+|---|---|---|
+| bAbI QA (tasks 1-10) | Multi-hop reasoning, path-finding | Tasks 1-10 (increasing complexity) |
+| CLUTRR | Family relation chains (multi-hop relational reasoning) | 5-10 hop complexity |
+| PropBank (narrative subset) | Multi-predicate sentences with complex arg structure | Sentences with ≥ 4 arguments |
+| ATOMIC 2020 (full) | Causal chains (if X then Y then Z) | Full if-then tuples |
+| Self-generated denoising | Corrupt any frame from Stages 1-3 corpus | Unlimited generated |
 
-#### Datasets (all streamable)
+#### Gate Criteria (advance to Stage 5 when met)
 
-| Dataset | Size | What It Provides | HF Name |
-|---|---|---|---|
-| ConceptNet 5 | 3.5M triples (EN subset ~1.5M) | Commonsense relations (UsedFor, IsA, HasProperty, CapableOf, etc.) | `conceptnet5` or direct CSV |
-| ATOMIC 2020 | 1.33M if-then tuples | Social/physical commonsense (xNeed, xEffect, xWant, oReact) | `allenai/atomic` |
-| WordNet (via NLTK) | 117K synsets, 207K word-sense pairs | Hypernyms, hyponyms, meronyms, holonyms | NLTK `wordnet` |
-
-#### Architecture
-
-No new neural components. This phase trains:
-- The encoder's embedding space (joint fine-tune with Phase F1 weights)
-- HDC codebook alignment (codebook entries drift toward real concept clusters)
-- VFN energy landscape (correct bindings = low energy states)
-
-#### Deliverables
-
-- Bind retrieval accuracy >50% on ConceptNet test split
-  (bind(A, rel) → nearest neighbor = B)
-- Analogy accuracy >35% (A:B::C:? via bind/unbind algebra)
-- Codebook quantization error <0.15 on concept embeddings
+- Slot filling accuracy ≥ 70% (mask 4-6 of 12 slots)
+- Multi-hop reasoning accuracy ≥ 60% (bAbI tasks 2-3)
+- VFN learns easy-first ordering (Agent converges before Result in >70% of cases)
+- Codebook quantization error < 0.15 on Stage 4 embeddings
+- VFN converges within 20 iterations on >75% of examples
 
 ---
 
-### Phase F3: Compositional Reasoning
+### Stage 5: Hypotheticals (The Teenager)
 
-**Goal:** Train the VFN to perform multi-step frame transformations — the
-core of RAR.
+**What Volt learns:** Full abstract reasoning. Systematic compositionality —
+recombining known concepts in novel ways. All 16 slots, full 30-iteration
+budget, all HDC operations.
 
+**Active slots:** 16 (all)
+**VFN iterations:** up to 30
+**HDC operations:** full algebra (superpose + bind + unbind + permute)
 **Duration:** 4-6 weeks
-**Hardware:** 1x H100 or 2x RTX 4090, ~100-200 GPU-hours
+**Hardware:** 1x H100, ~100-200 GPU-hours
 
-#### What This Phase Teaches
+#### Training Signals at This Stage
 
-This is the central training phase. The VFN learns to "think" — to take a
-frame representing a question or premise and iteratively refine it toward a
-frame representing the answer or conclusion.
+**Slot Filling (Full Denoising):** Mask 6-10 of 16 slots. Heavily corrupted
+frames (zeroed slots, Gaussian noise, shuffled assignments). The VFN predicts
+per-slot drift vectors that restore the original frame. This is the full
+denoising objective from the v2.0 plan, but the VFN has already practiced
+thousands of iterations of progressively harder slot reconstruction.
 
-This is NOT flat flow matching (query_frame → answer_frame). Instead:
+**Binding (Slot-Conditional Flow Matching):** Flow match per-slot with
+slot-identity constraints. Time variable t_s is per-slot (different slots
+converge at different rates). Constraint: Agent-slot drift must point toward
+Agent-like embeddings, not arbitrary vectors.
 
-#### Training Objectives (Three Complementary Signals)
+**Discrimination (Full Energy Landscape):** 16-slot coherence with all
+resolutions active. The VFN's energy function must score narrative coherence,
+causal consistency, temporal ordering, and structural validity simultaneously.
 
-**1. Denoising Slot Refinement (Primary)**
-- Take a real frame F from the corpus
-- Corrupt it: zero random slots, add Gaussian noise, shuffle slot assignments
-- Train VFN to predict the drift vector that restores the original frame
-- This directly trains the velocity field that RAR follows at inference time
-- Loss: per-slot MSE between predicted drift and (F_original - F_corrupted)
+**Multi-Resolution (Reasoning Chain Supervision):** Given (premise, step_1,
+step_2, ..., conclusion), train VFN to produce one refinement step at a time.
+NOT: map question directly to answer (that's disguised NTP). YES: map
+frame(t) to frame(t+1) where each step is a valid reasoning move.
 
-**2. Slot-Conditional Flow Matching (Secondary)**
-- Flow match per-slot with slot-identity constraints
-- Time variable t_s is per-slot (different slots converge at different rates)
-- Constraint: Agent-slot drift must point toward Agent-like embeddings, not
-  arbitrary vectors
-- Loss: MSE + slot-identity cosine penalty
+#### Datasets
 
-**3. Reasoning Chain Supervision (Tertiary)**
-- Given (premise, step_1, step_2, ..., conclusion), train VFN to produce
-  one refinement step at a time
-- NOT: map question directly to answer (that's disguised NTP)
-- YES: map frame(t) to frame(t+1) where each step is a valid reasoning move
-- Datasets with intermediate steps: CLUTRR (family relation chains),
-  bAbI (multi-hop QA with supporting facts), SCAN (compositional commands
-  with intermediate parses)
-- Loss: MSE on per-step drift
+| Dataset | What It Provides | Subset Used |
+|---|---|---|
+| SCAN | Compositional generalization (jump twice and walk left) | Full dataset (20K commands) |
+| COGS | Systematic compositional OOD generalization | Full dataset (24K sentences) |
+| CLUTRR (extended) | Multi-hop relational reasoning at high complexity | 10-15 hop chains |
+| bAbI QA (all 20 tasks) | Full multi-hop reasoning suite | All tasks |
+| Self-generated denoising | Corrupt any frame from Stages 1-4 corpus | Unlimited generated |
 
-#### Datasets (all streamable or generatable)
+#### Gate Criteria (advance to Stage 6 when met)
 
-| Dataset | Size | What It Provides | HF Name |
-|---|---|---|---|
-| SCAN | 20K compositional commands | Compositional generalization (jump twice and walk left) | `scan` |
-| COGS | 24K sentences | Systematic compositional OOD generalization | `cogs` |
-| CLUTRR | 5-15K per complexity level | Multi-hop relational reasoning (family trees) | `CLUTRR/v1.0` or generate |
-| bAbI QA | 10K per task (20 tasks) | Multi-hop reasoning, path-finding, counting | `facebook/babi_qa` |
-| Self-generated denoising | Unlimited | Corrupt any frame from F1/F2 corpus, train to reconstruct | Generated online |
-
-#### Architecture
-
-ScaledVfn (51M params) — existing architecture with modifications:
-- **Time conditioning**: Existing sinusoidal embedding, now per-slot
-- **Slot identity head**: New small head (Linear(256, 16)) that predicts
-  which slot type a given embedding belongs to. Added to enforce structural
-  constraints during denoising.
-- **Per-slot convergence**: Existing mechanism in RAR, now used during
-  training to let easy slots freeze while hard slots continue training.
-
-#### Deliverables
-
-- SCAN compositional generalization: >85% accuracy
-- bAbI multi-hop (tasks 2, 3): >75% accuracy
-- Frame denoising: >65% exact slot reconstruction (within cosine sim >0.9)
-- RAR convergence: >70% of test queries converge within 30 iterations
+- SCAN compositional generalization ≥ 85%
+- bAbI tasks 1-3 accuracy ≥ 75%
+- Frame denoising: exact slot reconstruction (cosine sim > 0.9) for ≥ 65% of slots
+- RAR convergence: ≥ 70% of test queries converge within 30 iterations
+- Analogy accuracy ≥ 35% (A:B::C:? via bind/unbind algebra)
 
 ---
 
-### Phase D1: Code Domain Specialization
+### Stage 6: Specialization (The Adult)
 
-**Goal:** Extend Volt's language understanding to code as a domain.
+**What Volt learns:** Code is a structured domain language. A system that
+already understands agents, actions, results, causality, and compositional
+reasoning now applies those concepts to programming.
 
+**Active slots:** 16 (with code-specific role mappings)
+**VFN iterations:** up to 30
+**HDC operations:** full algebra + code attention bias
 **Duration:** 3-4 weeks
-**Hardware:** 1x RTX 4090/5090, ~10-20 GPU-hours (encoder fine-tune) +
-100-200 GPU-hours (VFN fine-tune on code)
+**Hardware:** 1x H100, ~100-200 GPU-hours
 
-#### Prerequisites
+#### Why Code Is a Specialization, Not a Foundation
 
-Phases F1-F3 must be complete. The system must understand language and
-compositional reasoning before it can understand code.
+By Stage 6, the system already knows:
 
-#### What This Phase Teaches
+- "weather" is a natural phenomenon (Stage 1: naming)
+- "forecast" is a prediction about future states (Stage 3: context)
+- "app" is a software instrument used by agents (Stage 3: context)
+- Given premises, derive conclusions via frame refinement (Stage 5: reasoning)
 
-Code is a structured language with known slot mappings:
+Writing a weather app then becomes composing known concepts — not memorizing
+code patterns from (problem, solution) text pairs.
+
+#### Code Slot Mapping
 
 | Code Element | TensorFrame Slot | Example |
 |---|---|---|
@@ -434,24 +550,36 @@ Code is a structured language with known slot mappings:
 
 *Location slot is overloaded for code to mean "where the result goes."
 
-#### Training Objective
+#### Training Signals at This Stage
 
-**Code Slot Assignment** (supervised): Fine-tune the Role Head from Phase F1
-to classify code tokens into code-specific slots. Uses the existing heuristic
-role labels from Phase 0.4 (def→S0, args→S2, return→S3, if→S6, for→S4).
+**Code Slot Assignment** (supervised): Fine-tune the Role Head to classify
+code tokens into code-specific slots. Uses the existing heuristic role labels
+from Phase 0.4 (def→S0, args→S2, return→S3, if→S6, for→S4).
 
-**Code Semantic Embedding** (contrastive): Same InfoNCE as Phase F1 but on
-code pairs. `sum_array()` ≈ `calculate_total()` in embedding space.
+**Code Semantic Embedding** (contrastive): Same InfoNCE as earlier stages but
+on code pairs. `sum_array()` ≈ `calculate_total()` in embedding space.
 
-**Code Denoising** (VFN fine-tune): Apply the Phase F3 denoising objective to
+**Code Denoising** (VFN fine-tune): Apply the Stage 5 denoising objective to
 code frames. Mask the function-name slot, train VFN to predict it from
 arguments + body structure.
 
 **Compositional Code Reasoning** (VFN fine-tune): Given a problem description
-frame, refine toward a solution frame. This uses flow matching BUT with
-slot-conditional constraints from Phase F3 — not flat frame-to-frame mapping.
+frame, refine toward a solution frame. Uses slot-conditional flow matching
+with constraints from Stage 5 — not flat frame-to-frame mapping.
 
-#### Datasets (curated, pre-formatted, streamable)
+#### Code Attention Bias
+
+The existing code attention bias matrix (ADR-029) is applied on top of the
+general language attention weights learned in Stages 1-5:
+
+```
+Final attention = learned_language_weights + code_attention_bias
+```
+
+This preserves linguistic priors (Agent↔Predicate) while adding code-specific
+ones (Function↔Arguments, Return↔Operation).
+
+#### Datasets
 
 | Dataset | Size | What It Provides | HF Name |
 |---|---|---|---|
@@ -463,48 +591,32 @@ slot-conditional constraints from Phase F3 — not flat frame-to-frame mapping.
 | MBPP | 974 problems | Evaluation benchmark (with tests) | Already downloaded |
 | TACO | 26K problems | Competitive programming (with tests) | `BAAI/TACO` |
 
-**NOT used:** The Stack (44 GB of raw Python files). Raw source files are
-useful for BPE tokenizer training (already done) and codebook initialization,
-but not for VFN training. Pre-formatted (instruction, solution) pairs are
-more useful per byte.
+**NOT used for VFN training:** The Stack (44 GB of raw Python files). Retained
+for BPE tokenizer training (already done) and codebook initialization only.
 
-#### Code Attention Bias
+#### Gate Criteria (advance to Joint Alignment when met)
 
-The existing code attention bias matrix (ADR-029) is applied on top of the
-general language attention weights learned in Phase F1:
-
-```
-Final attention = learned_language_weights + code_attention_bias
-```
-
-This preserves linguistic priors (Agent↔Predicate) while adding code-specific
-ones (Function↔Arguments, Return↔Operation).
-
-#### Deliverables
-
-- Code slot assignment accuracy >85%
-- Code paraphrase similarity >0.75
-- RAR convergence on code problems >60% within 30 iterations
-- Decoded code is syntactically valid >80% of the time
-- Deferred target: Pass@1 >25% on HumanEval after joint alignment (Phase JA)
+- Code slot assignment accuracy ≥ 85%
+- Code paraphrase similarity ≥ 0.75
+- RAR convergence on code problems ≥ 60% within 30 iterations
+- Decoded code is syntactically valid ≥ 80% of the time
 
 ---
 
-### Phase JA: Joint Alignment
+## Part IV: Joint Alignment & Scale
+
+### JA: Joint Alignment
 
 **Goal:** End-to-end calibration of the full pipeline.
 
 **Duration:** 4-6 weeks
 **Hardware:** 1-2x H100, ~200-400 GPU-hours
 
-#### JA.1 — Codebook Initialization
+#### JA.1 — Codebook Refinement
 
-**When:** First step of Joint Alignment, after F1-F3 and D1 are complete.
-
-Run the existing k-means pipeline (`codebook-init` binary) using the Phase D1
-encoder to produce embeddings, then cluster into 65,536 codebook entries. This
-is a CPU-only job (~1-2 hours on 32+ cores). The codebook is needed for HNSW
-retrieval in subsequent steps.
+If the codebook was initialized after Stage 4, re-run k-means using the
+Stage 6 encoder (which now embeds both language and code) to produce final
+65,536 codebook entries. CPU-only job (~1-2 hours on 32+ cores).
 
 Output: `checkpoints/codebook.bin` (~64 MB)
 
@@ -536,8 +648,8 @@ Deliverable: false negative rate <2%, false positive rate <5%.
 #### JA.5 — End-to-End Fine-Tuning
 
 Fine-tune VFN + attention with gradients flowing through the full pipeline.
-Freeze encoder/decoder (trained in F1/D1). Use the denoising + slot-conditional
-objectives from Phase F3, but on end-to-end pipeline outputs.
+Freeze encoder/decoder (trained through Stages 1-6). Use the denoising +
+slot-conditional objectives from Stage 5, but on end-to-end pipeline outputs.
 
 For code: add test-execution reward signal via REINFORCE (test pass/fail is
 perfect verification — no human labeling needed).
@@ -567,7 +679,7 @@ Deliverable: >5% improvement on new queries, <3% degradation on old queries.
 
 ---
 
-### Phase S: Scale & Benchmark
+### S: Scale & Benchmark
 
 **Goal:** Scale VFN, add domains/languages, publish benchmarks.
 
@@ -581,14 +693,14 @@ Operator architecture at 500M params. Validate at each scale point.
 
 #### S.2 — Multi-Domain Training
 
-Extend beyond code to multiple domains using the same Foundation weights:
+Extend beyond code to multiple domains using the same Stage 1-5 weights:
 - Natural language QA (Natural Questions, SQuAD)
 - Mathematics (GSM8K, MATH)
 - Scientific reasoning (SciQ, ARC-Challenge)
 - Multi-lingual code (MultiPL-E: Python → JS, Java, Rust, Go)
 
-Each domain reuses Foundation phases F1-F3 and adds domain-specific fine-tuning
-(same pattern as Phase D1 for code).
+Each domain reuses Stage 1-5 foundation and adds domain-specific fine-tuning
+(same pattern as Stage 6 for code).
 
 #### S.3 — Benchmark Publication
 
@@ -609,42 +721,75 @@ reasoning tasks at lower compute cost.
 
 ---
 
-## Part IV: Dataset Strategy
+## Part V: Infrastructure & Datasets
 
-### Principles
+### Phase 0: Infrastructure (DONE, except updates)
+
+All infrastructure from the original Phase 0 is reusable:
+
+- **0.1 VFN Checkpoint System** — DONE. Save/load works.
+- **0.2 Dataset Pipeline** — DONE for JSONL. Needs extension:
+  - Add HuggingFace streaming adapter
+  - Add FrameNet/PropBank/ConceptNet format converters
+  - Add slot-annotated data format: JSONL with `{"text": "...", "slots": {"S0": "agent_word", "S1": "predicate_word", ...}}`
+- **0.3 Codebook Init** — Code DONE, k-means deferred to after Stage 4.
+- **0.4 Attention Bias** — DONE for code-specific patterns. Add a general
+  language bias matrix as the default, with code bias applied on top in Stage 6.
+
+**New infrastructure needed:**
+
+- **0.5 HuggingFace Streaming Script** — Python script in `tools/` that:
+  - Accepts a HuggingFace dataset name and split
+  - Streams rows via `datasets.load_dataset(..., streaming=True)`
+  - Converts to Volt's JSONL format
+  - Writes to stdout or a file
+  - Handles FrameNet, PropBank, ConceptNet, SCAN, COGS, CodeSearchNet,
+    tiny-codes, etc. via format-specific converters
+  - No full dataset download required
+
+- **0.6 Curriculum Scheduler** — Rust module in `volt-learn` that:
+  - Tracks current developmental stage
+  - Monitors gate metrics per stage
+  - Controls active slot count, max VFN iterations, available HDC ops
+  - Manages rehearsal mixing (20% earlier stages)
+  - Logs stage transitions and metric history
+
+### Dataset Strategy
+
+#### Principles
 
 1. **Curated over raw.** Pre-formatted (input, output) pairs > raw source
    files. 20K high-quality CodeAlpaca pairs are more useful than 6.5M raw
    Python files from The Stack.
 
 2. **Stream, don't download.** Use `datasets.load_dataset(..., streaming=True)`
-   for anything over 1 GB. Write a Python script that streams and converts to
-   Volt's JSONL format.
+   for anything over 1 GB.
 
 3. **Structured over flat.** Prefer datasets with annotations (SRL labels,
-   semantic roles, relation types) over plain text. Volt's architecture
-   requires structured supervision.
+   semantic roles, relation types) over plain text.
 
 4. **Small and dense > large and sparse.** 100K densely-annotated FrameNet
-   sentences are worth more than 10M unlabeled sentences for Volt's training.
+   sentences are worth more than 10M unlabeled sentences.
 
-### Dataset Summary by Phase
+#### Dataset Summary by Stage
 
-| Phase | Primary Datasets | Total Size | Format |
+| Stage | Primary Datasets | Total Size | Format |
 |---|---|---|---|
-| F1: Lexical | FrameNet, PropBank/CoNLL-2012, STS-B, PAWS | ~1.5M annotated sentences | Stream from HF |
-| F2: Knowledge | ConceptNet, ATOMIC, WordNet | ~5M triples | Stream or download CSV |
-| F3: Reasoning | SCAN, COGS, CLUTRR, bAbI, self-generated denoising | ~200K examples + unlimited generated | Stream from HF |
-| D1: Code | CodeSearchNet, tiny-codes, CodeAlpaca, code_instructions, HumanEval, MBPP, TACO | ~1.9M pairs | Stream or already downloaded |
-| JA: Alignment | Reuse D1 evaluation sets + generated adversarial | ~20K labeled | Generated |
+| 1: Naming | FrameNet (simple), WordNet, STS-B (concrete) | ~100K examples | Stream from HF |
+| 2: Sentences | PropBank (SVO), FrameNet (≤4 roles), PAWS | ~500K examples | Stream from HF |
+| 3: Context | PropBank (full), ConceptNet, ATOMIC, STS-B (full) | ~3M examples | Stream from HF |
+| 4: Narrative | bAbI (1-10), CLUTRR, ATOMIC (chains), self-generated | ~200K + unlimited | Stream + generated |
+| 5: Hypotheticals | SCAN, COGS, CLUTRR (extended), bAbI (all), self-generated | ~100K + unlimited | Stream + generated |
+| 6: Code | CodeSearchNet, tiny-codes, CodeAlpaca, code_instructions, TACO | ~1.9M pairs | Stream or downloaded |
+| JA: Alignment | Reuse Stage 6 eval sets + generated adversarial | ~20K labeled | Generated |
 | S: Scale | Natural Questions, GSM8K, MATH, SciQ, MultiPL-E | ~500K+ | Stream from HF |
 
-### What To Keep From Existing Downloads
+#### What To Keep From Existing Downloads
 
 | Downloaded Dataset | Size | Keep? | Reason |
 |---|---|---|---|
 | The Stack Python (44 GB) | 6.5M files | Keep for codebook init & BPE only | Raw files, not useful for VFN training |
-| CodeSearchNet (144 MB) | 100K pairs | Keep | Pre-formatted, used in D1 |
+| CodeSearchNet (144 MB) | 100K pairs | Keep | Pre-formatted, used in Stage 6 |
 | HumanEval (0.2 MB) | 164 problems | Keep | Evaluation benchmark |
 | MBPP (0.1 MB) | 257 problems | Keep | Evaluation benchmark |
 | APPS (1.3 GB) | 10K problems | Keep | Evaluation + RLVF training |
@@ -678,108 +823,175 @@ python tools/stream_dataset.py \
 
 ---
 
-## Part V: Operational Details
+## Part VI: Operational Details
 
 ### Compute Estimates
 
-| Phase | GPU-Hours | Hardware | Est. Cost (Cloud) |
+| Stage | GPU-Hours | Hardware | Est. Cost (Cloud) |
 |---|---|---|---|
-| F1: Lexical Grounding | 10-20 | 1x RTX 4090 | $5-10 |
-| F2: World Knowledge | 20-30 | CPU + light GPU | $10-20 |
-| F3: Compositional Reasoning | 100-200 | 1x H100 | $250-500 |
-| D1: Code Domain | 110-220 | 1x H100 | $275-550 |
+| 1: Naming | 5 | 1x RTX 4090 | $2-5 |
+| 2: Sentences | 10 | 1x RTX 4090 | $5-10 |
+| 3: Context | 20-30 | 1x RTX 4090 | $10-20 |
+| 4: Narrative | 60-100 | 1x H100 | $150-250 |
+| 5: Hypotheticals | 100-200 | 1x H100 | $250-500 |
+| 6: Code | 100-200 | 1x H100 | $250-500 |
 | JA: Joint Alignment | 200-400 | 1-2x H100 | $500-1000 |
 | S: Scale & Benchmark | 500-1500 | 2-4x H100 | $1250-3750 |
-| **Total** | **~940-2370** | | **~$2300-5800** |
+| **Total** | **~995-2445** | | **~$2400-6000** |
 
-These estimates assume the new training objectives converge efficiently. The
-previous plan estimated ~930-1790 H100-hours for the code-only path; the new
-plan adds language foundation phases (~130-250 hours) but may reduce code
-training time by providing better initialization.
+Rehearsal overhead is included in per-stage estimates (20% replay adds ~20%
+compute but uses smaller/faster frames from earlier stages).
 
 ### Checkpoint Inventory
 
 | Checkpoint | Produced By | Size | Path |
 |---|---|---|---|
 | BPE Tokenizer | Phase 0 (done) | 2.3 MB | `checkpoints/code_tokenizer.json` |
-| Language Encoder | Phase F1 | ~20 MB | `checkpoints/lang_encoder.safetensors` |
-| Language Decoder | Phase F1 | ~21 MB | `checkpoints/lang_decoder.safetensors` |
-| Code Encoder (fine-tune) | Phase D1 | ~20 MB | `checkpoints/code_encoder.safetensors` |
-| Code Decoder (fine-tune) | Phase D1 | ~21 MB | `checkpoints/code_decoder.safetensors` |
-| VFN (Foundation) | Phase F3 | ~200 MB | `checkpoints/vfn_foundation.safetensors` |
-| VFN (Code fine-tune) | Phase D1 | ~200 MB | `checkpoints/vfn_code.safetensors` |
-| Codebook | Phase JA.1 | ~64 MB | `checkpoints/codebook.bin` |
-| VFN (Aligned) | Phase JA | ~200 MB | `checkpoints/vfn_aligned.safetensors` |
-| VFN (Scaled, 500M) | Phase S.1 | ~2 GB | `checkpoints/vfn_scaled.safetensors` |
+| Stage 4 Encoder | Stage 4 | ~20 MB | `checkpoints/stage4_encoder.safetensors` |
+| Stage 4 Decoder | Stage 4 | ~21 MB | `checkpoints/stage4_decoder.safetensors` |
+| Stage 4 VFN | Stage 4 | ~200 MB | `checkpoints/stage4_vfn.safetensors` |
+| Codebook (initial) | After Stage 4 | ~64 MB | `checkpoints/codebook_init.bin` |
+| Stage 5 VFN | Stage 5 | ~200 MB | `checkpoints/stage5_vfn.safetensors` |
+| Code Encoder | Stage 6 | ~20 MB | `checkpoints/code_encoder.safetensors` |
+| Code Decoder | Stage 6 | ~21 MB | `checkpoints/code_decoder.safetensors` |
+| Code VFN | Stage 6 | ~200 MB | `checkpoints/code_vfn.safetensors` |
+| Codebook (final) | JA.1 | ~64 MB | `checkpoints/codebook.bin` |
+| VFN (Aligned) | JA | ~200 MB | `checkpoints/vfn_aligned.safetensors` |
+| VFN (Scaled, 500M) | S.1 | ~2 GB | `checkpoints/vfn_scaled.safetensors` |
+
+Note: Stages 1-3 don't produce separately named checkpoints — each stage
+overwrites `checkpoints/current_encoder.safetensors`, `current_decoder.safetensors`,
+and `current_vfn.safetensors`. Named checkpoints begin at Stage 4 when
+embeddings are meaningful enough to snapshot.
 
 ### Cloud Execution
 
-Cloud setup and parallelization details will be written as a separate
-operational guide when the new training binaries are implemented. The core
-approach (tmux sessions, checkpoint sync, per-epoch saves for preemption
-recovery) from the archived CLOUD_TRAINING_PLAN.md remains valid — only the
-training commands and data requirements change.
+Cloud setup details will be written as a separate operational guide when the
+spiral training binary is implemented. The core approach (tmux sessions,
+checkpoint sync, per-epoch saves for preemption recovery) from the archived
+CLOUD_TRAINING_PLAN.md remains valid — only the training commands and
+curriculum scheduler configuration change.
 
 ### What Needs to Be Implemented in Code
 
 | Item | Crate | Description |
 |---|---|---|
 | HF streaming script | `tools/stream_dataset.py` | Python script for dataset conversion |
+| Curriculum scheduler | `volt-learn` | Stage tracking, gate metrics, rehearsal mixing, slot/iteration control |
 | FrameNet/PropBank data loader | `volt-learn` | JSONL reader for slot-annotated sentences |
 | ConceptNet triple loader | `volt-learn` | JSONL reader for (concept, relation, concept) triples |
-| Denoising training loop | `volt-soft` or `volt-learn` | Corrupt frames, train VFN to restore |
+| Denoising training loop | `volt-soft` or `volt-learn` | Corrupt frames, train VFN to restore (used from Stage 1) |
 | Slot-conditional flow matching | `volt-soft` | Per-slot time variables + slot-identity constraint |
 | Reasoning chain trainer | `volt-learn` | Multi-step refinement training |
+| Active slot masking | `volt-soft` | Mask inactive slots in SlotAttention based on current stage |
+| Progressive Role Head | `volt-translate` | Role Head output size grows from 2 to 16 across stages |
 | Language attention bias | `volt-soft` | General linguistic slot attention prior |
-| `train-foundation` binary | `volt-learn` | Training binary for F1-F3 phases |
+| `train-spiral` binary | `volt-learn` | Training binary for all 6 developmental stages |
 
 ---
 
-## Part VI: Success Criteria
+## Part VII: Success Criteria
 
-### Phase F1 (Lexical Grounding)
-- Slot assignment accuracy >80% on PropBank test set
-- STS-B Spearman correlation >0.70
-- "dog" and "canine" cosine similarity >0.7 in Agent slot (S0)
+### Stage 1 (Naming)
 
-### Phase F2 (World Knowledge)
-- bind(A, rel) retrieval accuracy >50% on ConceptNet test
-- A:B::C:? analogy accuracy >35%
+- Slot filling: ≥ 70% on 2-slot frames
+- Superposition retrieval: ≥ 60%
+- Discrimination AUC: ≥ 0.65
 
-### Phase F3 (Compositional Reasoning)
-- SCAN length generalization >85%
-- bAbI tasks 1-3 accuracy >75%
-- Frame denoising slot reconstruction cosine sim >0.9 for >65% of slots
+### Stage 2 (Sentences)
 
-### Phase D1 (Code)
-- Code slot assignment accuracy >85%
-- Code paraphrase similarity >0.75
-- RAR convergence >60% within 30 iterations
+- Slot filling: ≥ 75% on 3-4 slot frames
+- Bind retrieval: ≥ 40%
+- Role violation AUC: ≥ 0.70
 
-### Phase JA (Alignment)
-- ECE <0.08
-- Overconfident error rate <8%
-- Post-sleep improvement >5%, forgetting <3%
+### Stage 3 (Context)
 
-### Phase S (Scale)
-- SCAN/COGS: >90% compositional generalization
-- HumanEval Pass@1 >25% (at 500M params)
+- Slot filling: ≥ 75% on 8-slot frames
+- Bind/unbind retrieval: ≥ 50% on ConceptNet test
+- 2-hop reasoning: ≥ 50%
+- STS-B Spearman correlation: ≥ 0.70
+
+### Stage 4 (Narrative)
+
+- Slot filling: ≥ 70% on 12-slot frames
+- bAbI tasks 2-3: ≥ 60%
+- Easy-first ordering: ≥ 70%
+- Codebook quantization error: < 0.15
+
+### Stage 5 (Hypotheticals)
+
+- SCAN length generalization: ≥ 85%
+- bAbI tasks 1-3: ≥ 75%
+- Frame denoising (cosine sim > 0.9): ≥ 65% of slots
+- RAR convergence within 30 iterations: ≥ 70%
+- Analogy accuracy: ≥ 35%
+
+### Stage 6 (Code)
+
+- Code slot assignment: ≥ 85%
+- Code paraphrase similarity: ≥ 0.75
+- RAR convergence on code: ≥ 60% within 30 iterations
+- Syntactically valid decoded code: ≥ 80%
+
+### Joint Alignment
+
+- ECE: < 0.08
+- Overconfident error rate: < 8%
+- Post-sleep improvement: > 5%, forgetting < 3%
+
+### Scale
+
+- SCAN/COGS: ≥ 90% compositional generalization
+- HumanEval Pass@1: ≥ 25% (at 500M params)
 - Compute efficiency: match transformer baseline at lower GPU-hours
 
 ---
 
-## Appendix: Comparison with Previous Approach
+## Appendix A: Comparison with Previous Approaches
 
-| Aspect | Previous Plan | This Plan |
-|---|---|---|
-| **Starting point** | Code (CodeSearchNet) | Language (FrameNet, PropBank) |
-| **VFN objective** | Flat flow matching (query→answer) | Denoising + slot-conditional + reasoning chains |
-| **Primary training signal** | MSE on frame-to-frame drift | Slot filling + compositional binding + energy-based discrimination |
-| **NTP presence** | Decoder (intentional) + VFN objective (accidental) | Decoder only (intentional, contained) |
-| **Dataset strategy** | Download The Stack (44 GB), local JSONL | Stream from HF, curated pre-formatted datasets |
-| **Curriculum** | Code first, maybe language later | Language → knowledge → reasoning → code |
-| **Number of plan documents** | 7 (contradictory) | 1 (this document) |
-| **Consistency with ARCHITECTURE.md** | Drifting (PATH_TO_AGI suggests NTP) | Aligned (all training uses Volt's native structures) |
+| Aspect | v1.0 (Code-First) | v2.0 (Sequential) | v3.0 (Spiral) |
+|---|---|---|---|
+| **Starting point** | Code (CodeSearchNet) | Language (FrameNet, PropBank) | 2-slot concrete nouns |
+| **VFN training start** | Phase F3 (week 6+) | Phase F3 (week 6+) | Stage 1 (day 1) |
+| **VFN objective** | Flat flow matching | Denoising + slot-conditional | Same, but practiced from day 1 |
+| **Active slots** | All 16 from start | All 16 from start | 2 → 16 progressive |
+| **VFN iterations** | Fixed at 30 | Fixed at 30 | 1 → 30 progressive |
+| **Catastrophic forgetting** | N/A (single phase) | Risk at F1→F2→F3 boundaries | Mitigated by 20% rehearsal |
+| **VFN total training time** | ~100-200 hours | ~100-200 hours | ~295-530 hours (5x more) |
+| **NTP presence** | Decoder + VFN (accidental) | Decoder only | Decoder only |
+| **Dataset strategy** | Download The Stack (44 GB) | Stream from HF | Stream from HF |
+| **Curriculum model** | None | Semester courses | Montessori / Piaget developmental |
+| **Implementation complexity** | Simple (1 loop) | Moderate (3 separate loops) | Higher (1 loop + curriculum scheduler) |
+| **Debugging** | Easy (isolated) | Easy (isolated phases) | Harder (stage interactions) |
+| **Closest analogy** | Trade school | University (finish calc, then physics) | Montessori education |
+
+## Appendix B: The Spiral Advantage — Why 5x VFN Practice Matters
+
+In the sequential plan, the training timeline looks like:
+
+```text
+Week 1-3:  Encoder trains on F1 (lexical grounding)     — VFN idle
+Week 3-6:  Encoder trains on F2 (world knowledge)       — VFN idle
+Week 6-12: VFN trains on F3 (compositional reasoning)   — VFN learning from scratch
+Week 12-16: VFN fine-tunes on D1 (code)                 — VFN adapting
+```
+
+In the spiral plan:
+
+```text
+Week 1-2:  VFN fills 1 slot from 2-slot frames          — trivial, builds confidence
+Week 2-5:  VFN fills 1-2 slots from 3-4 slot frames     — learns SVO structure
+Week 5-9:  VFN fills 2-4 slots from 8-slot frames       — learns contextual inference
+Week 9-14: VFN fills 4-6 slots from 12-slot frames      — learns ordering strategy
+Week 14-20: VFN fills 6-10 slots from 16-slot frames    — masters full reasoning
+Week 20-24: VFN applies skills to code domain            — fast specialization
+```
+
+By week 6, the spiral VFN has completed ~1000 training iterations on progressively
+harder slot reconstruction. The sequential VFN has completed zero. This head start
+compounds — the spiral VFN arrives at Stage 5 (SCAN/COGS level reasoning) having
+already internalized slot structure, convergence patterns, and easy-first strategies
+that the sequential VFN must learn cold.
 
 ---
 
